@@ -6,3 +6,150 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+/* style.css */
+.bluesky-modal-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.bluesky-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 12px;
+  margin-top: 10px;
+}
+
+.bluesky-modal-main {
+  display: flex;
+  flex-grow: 1;
+}
+
+.bluesky-avatar {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  margin-right: 12px;
+}
+
+.bluesky-textarea {
+  width: 100%;
+  min-height: 150px;
+  flex-grow: 1;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: 18px;
+  line-height: 1.5;
+  resize: none;
+}
+
+.bluesky-textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.bluesky-preview-container {
+  margin: 12px 0;
+}
+
+.bluesky-link-card {
+  display: flex;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--background-secondary);
+  cursor: pointer;
+}
+
+.bluesky-link-image {
+  width: 100px;
+  height: 100px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.bluesky-link-content {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.bluesky-link-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bluesky-link-description {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.bluesky-link-domain {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: auto;
+}
+
+.bluesky-image-preview-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.bluesky-image-preview {
+  position: relative;
+}
+
+.bluesky-image-preview img {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+.bluesky-remove-image-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background-color: rgba(0, 0, 0, 0.6);
+  color: white;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.bluesky-modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.bluesky-char-count {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.bluesky-char-count.bluesky-over-limit {
+  color: var(--text-error);
+  font-weight: bold;
+}

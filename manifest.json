@@ -1,11 +1,11 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "post-to-bluesky",
+	"name": "Post To Bluesky",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "This plugin posts from Obsidian to Bluesky.",
+	"author": "RieTamura",
+	"authorUrl": "https://github.com/RieTamura/Post-To-Bluesky",
+	"fundingUrl": "https://github.com/sponsors/RieTamura",
 	"isDesktopOnly": false
 }
