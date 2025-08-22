@@ -93,7 +93,7 @@ export default class BlueskyPlugin extends Plugin {
 }
 
 class PostModal extends Modal {
-	plugin: BlueskyPlugin; initialText: string; textArea: HTMLTextAreaElement; charCountEl: HTMLElement; postButton: ButtonComponent; linkPreviewContainer: HTMLElement; imagePreviewContainer: HTMLElement; linkPreviewData: LinkPreviewData | null = null; selectedImages: File[] = []; fileInput: HTMLInputElement; private debounceTimer: number | null = null;
+	plugin: BlueskyPlugin; initialText: string; textArea: HTMLTextAreaElement; charCountEl: HTMLElement; postButton: ButtonComponent; linkPreviewContainer: HTMLElement; imagePreviewContainer: HTMLElement; linkPreviewData: LinkPreviewData | null = null; selectedImages: File[] = []; fileInput: HTMLInputElement; private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	constructor(app: App, plugin: BlueskyPlugin, initialText: string) { super(app); this.plugin = plugin; this.initialText = initialText; }
 
 	onOpen() {
