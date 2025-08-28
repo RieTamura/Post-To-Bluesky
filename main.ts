@@ -108,6 +108,10 @@ export default class BlueskyPlugin extends Plugin {
 			const tagWithoutHash = tag.slice(1);
 			facets.push({ index: { byteStart, byteEnd }, features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }] });
 		}
+
+		// ★★★★★ 変更点: ファセットをbyteStartでソートする処理を追加 ★★★★★
+		facets.sort((a, b) => a.index.byteStart - b.index.byteStart);
+		
 		return facets.length > 0 ? facets : undefined;
 	}
 
@@ -123,7 +127,6 @@ export default class BlueskyPlugin extends Plugin {
 		if (new TextEncoder().encode(text).length > 300) { new Notice(`投稿が300バイトを超えています。テキストを短くしてください。`); return false; }
 		if (!this.accessJwt) { if (!(await this.login())) return false; }
 		try {
-			// ★★★★★ エラー箇所を修正: TDate -> Date ★★★★★
 			const record: any = { text: text, createdAt: new Date().toISOString(), $type: 'app.bsky.feed.post' };
 			const facets = this.detectFacets(text);
 			if (facets) record.facets = facets;
