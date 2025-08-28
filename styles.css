@@ -135,15 +135,25 @@
   border-top: 1px solid var(--background-modifier-border);
 }
 
-.bluesky-modal-footer > div:first-child {
+/* 修正：フッター内の配置を調整 */
+.bluesky-actions {
   display: flex;
-  justify-content: space-between;
   align-items: center;
 }
 
+.bluesky-footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+/* 修正：文字カウンターを右端に配置 */
 .bluesky-char-count {
   font-size: 12px;
   color: var(--text-muted);
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .bluesky-char-count.bluesky-over-limit {
@@ -157,6 +167,7 @@
   background: var(--background-secondary);
   border-radius: 6px;
   border: 1px solid var(--background-modifier-border);
+  margin-top: 4px;
 }
 
 .bluesky-hotkey-help small {

@@ -145,14 +145,14 @@ class PostModal extends Modal {
 
 		const headerEl = contentEl.createDiv({ cls: 'bluesky-modal-header' });
 		
-		// ホットキー表示付きのキャンセルボタン
+		// キャンセルボタン
 		const cancelBtn = new ButtonComponent(headerEl)
-			.setButtonText(`キャンセル (${this.plugin.settings.hotkeys.cancel})`)
+			.setButtonText('キャンセル')
 			.onClick(() => this.close());
 		
-		// ホットキー表示付きの投稿ボタン
+		// 投稿ボタン
 		this.postButton = new ButtonComponent(headerEl)
-			.setButtonText(`投稿 (${this.plugin.settings.hotkeys.post})`)
+			.setButtonText('投稿')
 			.setCta()
 			.onClick(() => this.handlePost());
 
@@ -172,7 +172,11 @@ class PostModal extends Modal {
 		this.imagePreviewContainer = contentEl.createDiv({ cls: 'bluesky-image-preview-container' });
 
 		const footerEl = contentEl.createDiv({ cls: 'bluesky-modal-footer' });
-		const actionsEl = footerEl.createDiv({ cls: 'bluesky-actions' });
+
+		// フッターの上部行：アクションボタンと文字カウンター
+		const footerRowEl = footerEl.createDiv({ cls: 'bluesky-footer-row' });
+		const actionsEl = footerRowEl.createDiv({ cls: 'bluesky-actions' });
+
 		this.fileInput = contentEl.createEl('input', { type: 'file', attr: { multiple: true, accept: 'image/*', style: 'display: none;' } });
 		this.fileInput.onchange = (e) => this.handleFileSelect(e);
 		
@@ -182,9 +186,10 @@ class PostModal extends Modal {
 			.setTooltip(`画像を追加 (最大4枚) - ${this.plugin.settings.hotkeys.addImage}`)
 			.onClick(() => this.fileInput.click());
 		
-		this.charCountEl = footerEl.createDiv({ cls: 'bluesky-char-count' });
+		// 文字カウンターを右端に配置
+		this.charCountEl = footerRowEl.createDiv({ cls: 'bluesky-char-count' });
 
-		// ヘルプテキストを追加
+		// ヘルプテキストを次の行に配置
 		const helpEl = footerEl.createDiv({ cls: 'bluesky-hotkey-help' });
 		helpEl.innerHTML = `
 			<small>
