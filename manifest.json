@@ -7,5 +7,5 @@
 	"author": "RieTamura",
 	"authorUrl": "https://github.com/RieTamura/Post-To-Bluesky",
 	"fundingUrl": "https://github.com/sponsors/RieTamura",
-	"isDesktopOnly": false
+	"isDesktopOnly": true
 }

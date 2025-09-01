@@ -102,10 +102,10 @@ export default class BlueskyPlugin extends Plugin {
 		const hashtagRegex = /#[\w\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+/g;
 		while ((match = hashtagRegex.exec(text)) !== null) {
 			const tag = match[0];
-			if (tag.length > 66) continue;
+			const tagWithoutHash = tag.slice(1);
+			if (tagWithoutHash.length > 64) continue;
 			const byteStart = encoder.encode(text.slice(0, match.index)).length;
 			const byteEnd = byteStart + encoder.encode(tag).length;
-			const tagWithoutHash = tag.slice(1);
 			facets.push({ index: { byteStart, byteEnd }, features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }] });
 		}
 
@@ -207,7 +207,7 @@ class PostModal extends Modal {
 		const footerRowEl = footerEl.createDiv({ cls: 'bluesky-footer-row' });
 		const actionsEl = footerRowEl.createDiv({ cls: 'bluesky-actions' });
 
-		this.fileInput = contentEl.createEl('input', { type: 'file', attr: { multiple: true, accept: 'image/*', style: 'display: none;' } });
+		this.fileInput = contentEl.createEl('input', { attr: { type: 'file', multiple: 'true', accept: 'image/*', style: 'display: none;' } });
 		this.fileInput.onchange = (e) => this.handleFileSelect(e);
 
 		// ホットキー表示付きの画像追加ボタン
@@ -249,7 +249,8 @@ class PostModal extends Modal {
 
 		setTimeout(() => {
 			this.textArea.focus();
-			this.textArea.setSelectionRange(this.initialText.length, this.initialText.length);
+			const end = this.textArea.value.length;
+			this.textArea.setSelectionRange(end, end);
 		}, 100);
 	}
 
@@ -399,6 +400,13 @@ class PostModal extends Modal {
 			this.toggleEmojiPicker();
 			return;
 		}
+
+		// 画像追加（Ctrl+I）
+		if (this.matchesHotkey(e, settings.addImage)) {
+			e.preventDefault();
+			this.fileInput?.click();
+			return;
+		}
 	}
 
 	// ホットキーのマッチング関数
@@ -505,14 +513,15 @@ class PostModal extends Modal {
 		try {
 			const response = await requestUrl({ url });
 			const doc = new DOMParser().parseFromString(response.text, 'text/html');
-			const getMeta = (prop: string) => doc.querySelector(`meta[property="${prop}"]`)?.getAttribute('content') || undefined;
+			const getOg = (prop: string) => doc.querySelector(`meta[property="${prop}"]`)?.getAttribute('content') || undefined;
+			const getName = (name: string) => doc.querySelector(`meta[name="${name}"]`)?.getAttribute('content') || undefined;
 			const titleElement = doc.querySelector('title');
 			const titleText = titleElement?.textContent?.trim() || undefined;
 			return {
 				url,
-				title: getMeta('og:title') || titleText || url,
-				description: getMeta('og:description') || getMeta('description') || '',
-				image: getMeta('og:image'),
+				title: getOg('og:title') || titleText || url,
+				description: getOg('og:description') || getName('description') || '',
+				image: getOg('og:image'),
 				domain: new URL(url).hostname
 			};
 		} catch (error) {
