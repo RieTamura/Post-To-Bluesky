@@ -23,9 +23,9 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	networkTimeoutMs: 15000,
 	hotkeys: {
 		cancel: 'Escape',
-		post: 'Ctrl+Enter',
-		addImage: 'Ctrl+I',
-		emoji: 'Ctrl+E'
+		post: 'Mod+Enter',
+		addImage: 'Mod+I',
+		emoji: 'Mod+E'
 	}
 }
 
@@ -43,7 +43,9 @@ function countGraphemes(text: string): number {
 			// @ts-ignore
 			if (!(countGraphemes as any)._seg) {
 				// @ts-ignore
-				(countGraphemes as any)._seg = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
+				const locale = (typeof navigator !== 'undefined' && (navigator as any).language) ? (navigator as any).language : undefined;
+				// @ts-ignore
+				(countGraphemes as any)._seg = new (Intl as any).Segmenter(locale, { granularity: 'grapheme' });
 			}
 			const seg = (countGraphemes as any)._seg;
 			let count = 0;
@@ -550,6 +552,10 @@ class PostModal extends Modal {
 					URL.revokeObjectURL(img.src);
 				}
 				this.updateImagePreviews();
+				if (this.selectedImages.length === 0) {
+					// 画像が空ならリンクプレビューを再評価
+					this.updateLinkPreview();
+				}
 			};
 		});
 	}
@@ -569,8 +575,8 @@ class PostModal extends Modal {
 
 	async updateLinkPreview() {
 		if (this.selectedImages.length > 0) return;
-		const match = this.textArea.value.match(/https?:\/\/[^\s]+/);
-		const url = match ? match[0] : null;
+		const match = this.textArea.value.match(/https?:\/\/[^\s<>()\[\]{}"']+/);
+		const url = match ? match[0].replace(/[.,!?)\]\}]+$/, '') : null;
 		if (url && url === this.linkPreviewData?.url) return;
 		this.linkPreviewContainer.empty();
 		this.linkPreviewData = null;
@@ -835,7 +841,7 @@ class BlueskySettingTab extends PluginSettingTab {
 		});
 
 		containerEl.createEl('p', {
-			text: 'ホットキーの記法: Ctrl+Key, Shift+Key, Alt+Key, Meta+Key の組み合わせで指定してください。例: Ctrl+Shift+S',
+			text: 'ホットキーの記法: Mod(=Ctrl/⌘)+Key または Ctrl/Shift/Alt/Meta の組み合わせで指定してください。例: Mod+Shift+S',
 			cls: 'setting-item-description'
 		});
 	}
