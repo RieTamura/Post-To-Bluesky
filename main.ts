@@ -115,10 +115,13 @@ export default class BlueskyPlugin extends Plugin {
 	detectFacets(text: string) {
 		const facets = [];
 		const encoder = new TextEncoder();
-		const linkRegex = /https?:\/\/[^\s]+/g;
+		// プレビュー側と同じ判定に寄せる
+		const linkRegex = /https?:\/\/[^\s<>()\[\]{}"']+/g;
 		let match;
 		while ((match = linkRegex.exec(text)) !== null) {
-			const uri = match[0];
+			const rawUri = match[0];
+			// 末尾の句読点や閉じ括弧などはリンク外として扱う
+			const uri = rawUri.replace(/[.,!?)\]\}]+$/, '');
 			const byteStart = encoder.encode(text.slice(0, match.index)).length;
 			const byteEnd = byteStart + encoder.encode(uri).length;
 			facets.push({ index: { byteStart, byteEnd }, features: [{ $type: 'app.bsky.richtext.facet#link', uri: uri }] });
@@ -647,11 +650,13 @@ class PostModal extends Modal {
 					const imageBitmap = await createImageBitmap(file);
 					const { width, height } = imageBitmap;
 					const canvas = document.createElement('canvas');
-					canvas.width = width;
-					canvas.height = height;
+					const MAX_EDGE = 2048;
+					const scale = Math.min(1, MAX_EDGE / Math.max(width, height));
+					canvas.width = Math.max(1, Math.round(width * scale));
+					canvas.height = Math.max(1, Math.round(height * scale));
 					const ctx = canvas.getContext('2d');
 					if (!ctx) throw new Error('Failed to get canvas context');
-					ctx.drawImage(imageBitmap, 0, 0);
+					ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
 					imageBitmap.close();
 					const processedBlob = await new Promise<Blob>((resolve, reject) => {
 						const fallbackType = file.type || 'image/jpeg';
@@ -774,8 +779,8 @@ class BlueskySettingTab extends PluginSettingTab {
 				.setValue(String(this.plugin.settings.networkTimeoutMs ?? 15000))
 				.onChange(async (value) => {
 					const n = Number(value);
-					const v = Number.isFinite(n) ? n : 15000;
-					this.plugin.settings.networkTimeoutMs = Math.min(60000, Math.max(3000, v));
+					const clamped = Number.isFinite(n) ? Math.min(Math.max(Math.round(n), 1000), 60000) : 15000;
+					this.plugin.settings.networkTimeoutMs = clamped;
 					await this.plugin.saveSettings();
 				}));
 
@@ -806,7 +811,7 @@ class BlueskySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('投稿のホットキー')
-			.setDesc('投稿を送信するためのキー（デフォルト: Ctrl+Enter）')
+			.setDesc('投稿を送信するためのキー（デフォルト: Mod+Enter）')
 			.addText(text => text
 				.setPlaceholder('Mod+Enter')
 				.setValue(this.plugin.settings.hotkeys.post)
@@ -817,7 +822,7 @@ class BlueskySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('画像追加のホットキー')
-			.setDesc('画像を追加するためのキー（デフォルト: Ctrl+I）')
+			.setDesc('画像を追加するためのキー（デフォルト: Mod+I）')
 			.addText(text => text
 				.setPlaceholder('Mod+I')
 				.setValue(this.plugin.settings.hotkeys.addImage)
@@ -828,7 +833,7 @@ class BlueskySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('絵文字追加のホットキー')
-			.setDesc('絵文字ピッカーを開くためのキー（デフォルト: Ctrl+E）')
+			.setDesc('絵文字ピッカーを開くためのキー（デフォルト: Mod+E）')
 			.addText(text => text
 				.setPlaceholder('Mod+E')
 				.setValue(this.plugin.settings.hotkeys.emoji)
