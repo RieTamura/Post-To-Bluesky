@@ -115,14 +115,17 @@ export default class BlueskyPlugin extends Plugin {
 		return facets.length > 0 ? facets : undefined;
 	}
 
-	async uploadBlob(blob: ArrayBuffer, mimeType: string): Promise<any> {
+	async uploadBlob(blob: ArrayBuffer, mimeType: string, retried: boolean = false): Promise<any> {
 		if (!this.accessJwt) { if (!(await this.login())) throw new Error("ログインに失敗しました"); }
 		const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob });
-		if (!response.ok) { if (response.status === 401 && (await this.login())) return this.uploadBlob(blob, mimeType); throw new Error(`画像アップロードに失敗しました: ${response.status}`); }
+		if (!response.ok) {
+			if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
+			throw new Error(`画像アップロードに失敗しました: ${response.status}`);
+		}
 		return await response.json();
 	}
 
-	async postToBluesky(text: string, embed?: Embed): Promise<boolean> {
+	async postToBluesky(text: string, embed?: Embed, retried: boolean = false): Promise<boolean> {
 		if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) { new Notice('投稿内容が空です'); return false; }
 		if (new TextEncoder().encode(text).length > 300) { new Notice(`投稿が300バイトを超えています。テキストを短くしてください。`); return false; }
 		if (!this.accessJwt) { if (!(await this.login())) return false; }
@@ -132,7 +135,12 @@ export default class BlueskyPlugin extends Plugin {
 			if (facets) record.facets = facets;
 			if (embed) record.embed = embed;
 			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.settings.handle, collection: 'app.bsky.feed.post', record: record }) });
-			if (!response.ok) { if (response.status === 401 && (await this.login())) return this.postToBluesky(text, embed); const errorBody = await response.json(); console.error('Bluesky post failed:', errorBody); throw new Error(`投稿に失敗しました: ${response.status}`); }
+			if (!response.ok) {
+				if (response.status === 401 && !retried && (await this.login())) return this.postToBluesky(text, embed, true);
+				const errorBody = await response.json().catch(() => ({}));
+				console.error('Bluesky post failed:', errorBody);
+				throw new Error(`投稿に失敗しました: ${response.status}`);
+			}
 			new Notice('Blueskyに投稿しました！');
 			return true;
 		} catch (error) { new Notice(`投稿エラー: ${error.message}`); return false; }
@@ -154,6 +162,7 @@ class PostModal extends Modal {
 	private keyHandler: (e: KeyboardEvent) => void;
 	emojiPickerContainer!: HTMLElement;
 	private isEmojiPickerVisible: boolean = false;
+	private pendingLinkPreviewUrl: string | null = null;
 
 	constructor(app: App, plugin: BlueskyPlugin, initialText: string) {
 		super(app);
@@ -516,7 +525,10 @@ class PostModal extends Modal {
 		this.linkPreviewContainer.empty();
 		this.linkPreviewData = null;
 		if (url) {
-			this.linkPreviewData = await this.fetchLinkPreview(url);
+			this.pendingLinkPreviewUrl = url;
+			const data = await this.fetchLinkPreview(url);
+			if (this.pendingLinkPreviewUrl !== url) return;
+			this.linkPreviewData = data;
 			if (this.linkPreviewData) this.displayLinkPreview(this.linkPreviewData);
 		}
 	}
@@ -529,11 +541,16 @@ class PostModal extends Modal {
 			const getName = (name: string) => doc.querySelector(`meta[name="${name}"]`)?.getAttribute('content') || undefined;
 			const titleElement = doc.querySelector('title');
 			const titleText = titleElement?.textContent?.trim() || undefined;
+			const base = new URL(url);
+			const resolve = (u?: string) => u ? new URL(u, base).toString() : undefined;
+			const ogImageSecure = getOg('og:image:secure_url');
+			const ogImage = getOg('og:image');
+			const imageUrl = resolve(ogImageSecure || ogImage);
 			return {
 				url,
 				title: getOg('og:title') || titleText || url,
 				description: getOg('og:description') || getName('description') || '',
-				image: getOg('og:image'),
+				image: imageUrl,
 				domain: new URL(url).hostname
 			};
 		} catch (error) {
@@ -573,8 +590,10 @@ class PostModal extends Modal {
 					const ctx = canvas.getContext('2d');
 					if (!ctx) throw new Error('Failed to get canvas context');
 					ctx.drawImage(imageBitmap, 0, 0);
+					imageBitmap.close();
 					const processedBlob = await new Promise<Blob>((resolve, reject) => {
-						canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')), file.type);
+						const fallbackType = file.type || 'image/jpeg';
+						canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')), fallbackType);
 					});
 					const buffer = await processedBlob.arrayBuffer();
 					const uploaded = await this.plugin.uploadBlob(buffer, processedBlob.type);
@@ -632,6 +651,13 @@ class PostModal extends Modal {
 
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
+		// 画像プレビューの blob URL を解放
+		try {
+			this.imagePreviewContainer?.querySelectorAll('img').forEach((el) => {
+				const src = (el as HTMLImageElement).src;
+				if (src?.startsWith('blob:')) URL.revokeObjectURL(src);
+			});
+		} catch {}
 		this.contentEl.empty();
 	}
 }
