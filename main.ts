@@ -469,15 +469,27 @@ class PostModal extends Modal {
 	}
 
 	updateImagePreviews() {
+		// Revoke existing object URLs before clearing to avoid memory leaks
+		this.imagePreviewContainer.querySelectorAll('img').forEach((el) => {
+			const imgEl = el as HTMLImageElement;
+			if (imgEl.src && imgEl.src.startsWith('blob:')) {
+				URL.revokeObjectURL(imgEl.src);
+			}
+		});
 		this.imagePreviewContainer.empty();
 		this.selectedImages.forEach((file, index) => {
 			const previewEl = this.imagePreviewContainer.createDiv({ cls: 'bluesky-image-preview' });
 			const img = previewEl.createEl('img');
-			img.src = URL.createObjectURL(file);
+			const objectUrl = URL.createObjectURL(file);
+			img.src = objectUrl;
 			const removeBtn = previewEl.createDiv({ cls: 'bluesky-remove-image-btn' });
 			setIcon(removeBtn, 'x');
 			removeBtn.onclick = () => {
-				this.selectedImages.splice(index, 1);
+				const currentIndex = this.selectedImages.indexOf(file);
+				if (currentIndex !== -1) this.selectedImages.splice(currentIndex, 1);
+				if (img.src && img.src.startsWith('blob:')) {
+					URL.revokeObjectURL(img.src);
+				}
 				this.updateImagePreviews();
 			};
 		});
