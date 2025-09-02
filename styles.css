@@ -291,3 +291,33 @@
   background: var(--background-modifier-hover);
   transform: scale(1.1);
 }
+
+/* ホットキー衝突警告のスタイル */
+.hotkey-conflict-warning {
+	margin: 10px 0;
+	padding: 10px;
+	border-radius: 5px;
+	font-size: 14px;
+	line-height: 1.4;
+	display: none;
+}
+
+.hotkey-conflict-warning.hotkey-conflict-warning {
+	background-color: #fff3cd;
+	border: 1px solid #ffeaa7;
+	color: #856404;
+}
+
+.hotkey-conflict-warning.hotkey-conflict-error {
+	background-color: #f8d7da;
+	border: 1px solid #f5c6cb;
+	color: #721c24;
+}
+
+.hotkey-conflict-warning strong {
+	font-weight: 600;
+}
+
+.hotkey-conflict-warning br {
+	margin-bottom: 5px;
+}
