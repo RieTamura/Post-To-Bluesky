@@ -100,14 +100,20 @@ export default class BlueskyPlugin extends Plugin {
 	async login(): Promise<boolean> {
 		if (!this.settings.handle || !this.settings.password) { new Notice('Blueskyのハンドルとパスワードを設定してください'); return false; }
 		try {
-			const resp = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password }), });
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
+			const resp = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password }), signal: controller.signal });
 			if (!resp.ok) throw new Error(`ログインに失敗しました: ${resp.status}`);
 			const data = await resp.json();
 			this.accessJwt = data.accessJwt; this.refreshJwt = data.refreshJwt; this.did = data.did;
 			try {
-				const profileResp = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${data.did}`, { headers: { 'Authorization': `Bearer ${this.accessJwt}` } });
+				const pController = new AbortController();
+				const pTimeout = setTimeout(() => pController.abort(), this.settings.networkTimeoutMs ?? 15000);
+				const profileResp = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${data.did}`, { headers: { 'Authorization': `Bearer ${this.accessJwt}` }, signal: pController.signal });
 				if (profileResp.ok) { const profileData = await profileResp.json(); this.userAvatar = profileData.avatar || ''; }
+				clearTimeout(pTimeout);
 			} catch (e) { console.error("アバターの取得に失敗しました:", e); }
+			clearTimeout(timeout);
 			return true;
 		} catch (error) { new Notice(`ログインエラー: ${error.message}`); return false; }
 	}
@@ -150,6 +156,12 @@ export default class BlueskyPlugin extends Plugin {
 			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Accept': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
 			if (!response.ok) {
 				if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
+				if (response.status === 429 && !retried) {
+					const retryAfter = Number(response.headers.get('retry-after'));
+					const backoffMs = Number.isFinite(retryAfter) ? Math.max(500, retryAfter * 1000) : 1500;
+					await new Promise(r => setTimeout(r, backoffMs));
+					return this.uploadBlob(blob, mimeType, true);
+				}
 				const errorBody = await response.json().catch(() => ({}));
 				const message = (errorBody && (errorBody.message || errorBody.error)) || `画像アップロードに失敗しました: ${response.status}`;
 				throw new Error(message);
@@ -527,7 +539,15 @@ class PostModal extends Modal {
 			this.linkPreviewContainer.empty();
 			this.pendingLinkPreviewUrl = null;
 		}
-		Array.from(files).slice(0, remainingSlots).forEach(file => this.selectedImages.push(file));
+		const existing = new Set(this.selectedImages.map(f => `${f.name}|${f.size}|${f.lastModified}`));
+		const uniques: File[] = [];
+		for (const file of Array.from(files)) {
+			const key = `${file.name}|${file.size}|${file.lastModified}`;
+			if (existing.has(key)) continue;
+			uniques.push(file);
+			if (uniques.length >= remainingSlots) break;
+		}
+		this.selectedImages.push(...uniques);
 		this.updateImagePreviews();
 		// 同一ファイル再選択のためにクリア
 		this.fileInput.value = '';
@@ -611,10 +631,13 @@ class PostModal extends Modal {
 			const ogImageSecure = getOg('og:image:secure_url');
 			const ogImage = getOg('og:image');
 			const imageUrl = resolve(ogImageSecure || ogImage);
+			const rawTitle = getOg('og:title') || getName('twitter:title') || titleText || url;
+			const rawDesc = getOg('og:description') || getName('twitter:description') || getName('description') || '';
+			const clamp = (s?: string, max = 300) => s ? (s.length > max ? s.slice(0, max) : s) : s;
 			return {
 				url,
-				title: getOg('og:title') || getName('twitter:title') || titleText || url,
-				description: getOg('og:description') || getName('twitter:description') || getName('description') || '',
+				title: clamp(rawTitle, 120),
+				description: clamp(rawDesc, 300),
 				image: imageUrl,
 				domain: new URL(url).hostname
 			};
@@ -641,7 +664,7 @@ class PostModal extends Modal {
 			new Notice('投稿内容を入力してください');
 			return;
 		}
-		this.postButton.setButtonText('Posting...').setDisabled(true);
+		this.postButton.setButtonText('投稿中…').setDisabled(true);
 		let embed: Embed | undefined;
 
 		if (this.selectedImages.length > 0) {
@@ -672,7 +695,7 @@ class PostModal extends Modal {
 					return {
 						image: uploaded.blob,
 						alt: '',
-						aspectRatio: { width, height }
+						aspectRatio: { width: canvas.width, height: canvas.height }
 					};
 				}));
 				embed = { $type: 'app.bsky.embed.images', images: uploadedImages };
