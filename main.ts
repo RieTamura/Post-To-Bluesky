@@ -144,7 +144,7 @@ export default class BlueskyPlugin extends Plugin {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
 		try {
-			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
+			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Accept': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
 			if (!response.ok) {
 				if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
 				const errorBody = await response.json().catch(() => ({}));
@@ -541,7 +541,7 @@ class PostModal extends Modal {
 		this.imagePreviewContainer.empty();
 		this.selectedImages.forEach((file, index) => {
 			const previewEl = this.imagePreviewContainer.createDiv({ cls: 'bluesky-image-preview' });
-			const img = previewEl.createEl('img');
+			const img = previewEl.createEl('img', { attr: { alt: file.name || 'image' } });
 			const objectUrl = URL.createObjectURL(file);
 			img.src = objectUrl;
 			const removeBtn = previewEl.createDiv({ cls: 'bluesky-remove-image-btn' });
@@ -774,7 +774,8 @@ class BlueskySettingTab extends PluginSettingTab {
 				.setValue(String(this.plugin.settings.networkTimeoutMs ?? 15000))
 				.onChange(async (value) => {
 					const n = Number(value);
-					this.plugin.settings.networkTimeoutMs = Number.isFinite(n) && n > 0 ? n : 15000;
+					const v = Number.isFinite(n) ? n : 15000;
+					this.plugin.settings.networkTimeoutMs = Math.min(60000, Math.max(3000, v));
 					await this.plugin.saveSettings();
 				}));
 
@@ -810,7 +811,7 @@ class BlueskySettingTab extends PluginSettingTab {
 				.setPlaceholder('Mod+Enter')
 				.setValue(this.plugin.settings.hotkeys.post)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.post = value || 'Ctrl+Enter';
+					this.plugin.settings.hotkeys.post = value || 'Mod+Enter';
 					await this.plugin.saveSettings();
 				}));
 
@@ -821,7 +822,7 @@ class BlueskySettingTab extends PluginSettingTab {
 				.setPlaceholder('Mod+I')
 				.setValue(this.plugin.settings.hotkeys.addImage)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.addImage = value || 'Ctrl+I';
+					this.plugin.settings.hotkeys.addImage = value || 'Mod+I';
 					await this.plugin.saveSettings();
 				}));
 
@@ -832,7 +833,7 @@ class BlueskySettingTab extends PluginSettingTab {
 				.setPlaceholder('Mod+E')
 				.setValue(this.plugin.settings.hotkeys.emoji)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.emoji = value || 'Ctrl+E';
+					this.plugin.settings.hotkeys.emoji = value || 'Mod+E';
 					await this.plugin.saveSettings();
 				}));
 
@@ -843,6 +844,11 @@ class BlueskySettingTab extends PluginSettingTab {
 
 		containerEl.createEl('p', {
 			text: 'ホットキーの記法: Mod(=Ctrl/⌘)+Key または Ctrl/Shift/Alt/Meta の組み合わせで指定してください。例: Mod+Shift+S',
+			cls: 'setting-item-description'
+		});
+
+		containerEl.createEl('p', {
+			text: '注意: OS/アプリ標準のショートカットと衝突する場合があります。動作しない場合は別の組み合わせに変更してください。',
 			cls: 'setting-item-description'
 		});
 	}
