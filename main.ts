@@ -6,6 +6,7 @@ interface BlueskyPluginSettings {
 	handle: string;
 	password: string;
 	defaultHashtags: string;
+	networkTimeoutMs?: number;
 	// ホットキー設定を追加
 	hotkeys: {
 		cancel: string;
@@ -19,11 +20,12 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	handle: '',
 	password: '',
 	defaultHashtags: '',
+	networkTimeoutMs: 15000,
 	hotkeys: {
 		cancel: 'Escape',
-		post: 'Ctrl+Enter',
-		addImage: 'Ctrl+I',
-		emoji: 'Ctrl+E'
+		post: 'Mod+Enter',
+		addImage: 'Mod+I',
+		emoji: 'Mod+E'
 	}
 }
 
@@ -33,11 +35,33 @@ interface Image { image: { $type: 'blob'; ref: { $link: string }; mimeType: stri
 interface ImageEmbed { $type: 'app.bsky.embed.images'; images: Image[]; }
 type Embed = ExternalEmbed | ImageEmbed;
 
+function countGraphemes(text: string): number {
+	// Prefer Intl.Segmenter if available; fallback to code points
+	try {
+		// @ts-ignore
+		if (typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
+			// @ts-ignore
+			if (!(countGraphemes as any)._seg) {
+				// @ts-ignore
+				const locale = (typeof navigator !== 'undefined' && (navigator as any).language) ? (navigator as any).language : undefined;
+				// @ts-ignore
+				(countGraphemes as any)._seg = new (Intl as any).Segmenter(locale, { granularity: 'grapheme' });
+			}
+			const seg = (countGraphemes as any)._seg;
+			let count = 0;
+			for (const _ of seg.segment(text)) count++;
+			return count;
+		}
+	} catch {}
+	return Array.from(text).length;
+}
+
 export default class BlueskyPlugin extends Plugin {
 	settings: BlueskyPluginSettings;
 	accessJwt: string = '';
 	refreshJwt: string = '';
 	userAvatar: string = '';
+	did: string = '';
 
 	async onload() {
 		await this.loadSettings();
@@ -76,14 +100,20 @@ export default class BlueskyPlugin extends Plugin {
 	async login(): Promise<boolean> {
 		if (!this.settings.handle || !this.settings.password) { new Notice('Blueskyのハンドルとパスワードを設定してください'); return false; }
 		try {
-			const resp = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password }), });
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
+			const resp = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password }), signal: controller.signal });
 			if (!resp.ok) throw new Error(`ログインに失敗しました: ${resp.status}`);
 			const data = await resp.json();
-			this.accessJwt = data.accessJwt; this.refreshJwt = data.refreshJwt;
+			this.accessJwt = data.accessJwt; this.refreshJwt = data.refreshJwt; this.did = data.did;
 			try {
-				const profileResp = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${data.did}`, { headers: { 'Authorization': `Bearer ${this.accessJwt}` } });
+				const pController = new AbortController();
+				const pTimeout = setTimeout(() => pController.abort(), this.settings.networkTimeoutMs ?? 15000);
+				const profileResp = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${data.did}`, { headers: { 'Authorization': `Bearer ${this.accessJwt}` }, signal: pController.signal });
 				if (profileResp.ok) { const profileData = await profileResp.json(); this.userAvatar = profileData.avatar || ''; }
+				clearTimeout(pTimeout);
 			} catch (e) { console.error("アバターの取得に失敗しました:", e); }
+			clearTimeout(timeout);
 			return true;
 		} catch (error) { new Notice(`ログインエラー: ${error.message}`); return false; }
 	}
@@ -91,10 +121,13 @@ export default class BlueskyPlugin extends Plugin {
 	detectFacets(text: string) {
 		const facets = [];
 		const encoder = new TextEncoder();
-		const linkRegex = /https?:\/\/[^\s]+/g;
+		// プレビュー側と同じ判定に寄せる
+		const linkRegex = /https?:\/\/[^\s<>()\[\]{}"']+/g;
 		let match;
 		while ((match = linkRegex.exec(text)) !== null) {
-			const uri = match[0];
+			const rawUri = match[0];
+			// 末尾の句読点や閉じ括弧などはリンク外として扱う
+			const uri = rawUri.replace(/[.,!?)\]\}]+$/, '');
 			const byteStart = encoder.encode(text.slice(0, match.index)).length;
 			const byteEnd = byteStart + encoder.encode(uri).length;
 			facets.push({ index: { byteStart, byteEnd }, features: [{ $type: 'app.bsky.richtext.facet#link', uri: uri }] });
@@ -102,10 +135,10 @@ export default class BlueskyPlugin extends Plugin {
 		const hashtagRegex = /#[\w\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+/g;
 		while ((match = hashtagRegex.exec(text)) !== null) {
 			const tag = match[0];
-			if (tag.length > 66) continue;
+			const tagWithoutHash = tag.slice(1);
+			if (countGraphemes(tagWithoutHash) > 64) continue;
 			const byteStart = encoder.encode(text.slice(0, match.index)).length;
 			const byteEnd = byteStart + encoder.encode(tag).length;
-			const tagWithoutHash = tag.slice(1);
 			facets.push({ index: { byteStart, byteEnd }, features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }] });
 		}
 
@@ -115,24 +148,60 @@ export default class BlueskyPlugin extends Plugin {
 		return facets.length > 0 ? facets : undefined;
 	}
 
-	async uploadBlob(blob: ArrayBuffer, mimeType: string): Promise<any> {
+	async uploadBlob(blob: ArrayBuffer, mimeType: string, retried: boolean = false): Promise<any> {
 		if (!this.accessJwt) { if (!(await this.login())) throw new Error("ログインに失敗しました"); }
-		const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob });
-		if (!response.ok) { if (response.status === 401 && (await this.login())) return this.uploadBlob(blob, mimeType); throw new Error(`画像アップロードに失敗しました: ${response.status}`); }
-		return await response.json();
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
+		try {
+			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Accept': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
+			if (!response.ok) {
+				if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
+				if (response.status === 429 && !retried) {
+					const retryAfter = Number(response.headers.get('retry-after'));
+					const backoffMs = Number.isFinite(retryAfter) ? Math.max(500, retryAfter * 1000) : 1500;
+					await new Promise(r => setTimeout(r, backoffMs));
+					return this.uploadBlob(blob, mimeType, true);
+				}
+				const errorBody = await response.json().catch(() => ({}));
+				const message = (errorBody && (errorBody.message || errorBody.error)) || `画像アップロードに失敗しました: ${response.status}`;
+				throw new Error(message);
+			}
+			return await response.json();
+		} catch (e: any) {
+			if (e?.name === 'AbortError') throw new Error('画像アップロードがタイムアウトしました');
+			throw e;
+		} finally {
+			clearTimeout(timeout);
+		}
 	}
 
-	async postToBluesky(text: string, embed?: Embed): Promise<boolean> {
+	async postToBluesky(text: string, embed?: Embed, retried: boolean = false): Promise<boolean> {
 		if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) { new Notice('投稿内容が空です'); return false; }
-		if (new TextEncoder().encode(text).length > 300) { new Notice(`投稿が300バイトを超えています。テキストを短くしてください。`); return false; }
+		if (countGraphemes(text) > 300) { new Notice(`投稿が300文字を超えています。テキストを短くしてください。`); return false; }
 		if (!this.accessJwt) { if (!(await this.login())) return false; }
+		if (!this.did) { if (!(await this.login())) return false; }
 		try {
 			const record: any = { text: text, createdAt: new Date().toISOString(), $type: 'app.bsky.feed.post' };
 			const facets = this.detectFacets(text);
 			if (facets) record.facets = facets;
 			if (embed) record.embed = embed;
-			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.settings.handle, collection: 'app.bsky.feed.post', record: record }) });
-			if (!response.ok) { if (response.status === 401 && (await this.login())) return this.postToBluesky(text, embed); const errorBody = await response.json(); console.error('Bluesky post failed:', errorBody); throw new Error(`投稿に失敗しました: ${response.status}`); }
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
+			try {
+				const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.did, collection: 'app.bsky.feed.post', record: record }), signal: controller.signal });
+				if (!response.ok) {
+					if (response.status === 401 && !retried && (await this.login())) return this.postToBluesky(text, embed, true);
+					const errorBody = await response.json().catch(() => ({}));
+					console.error('Bluesky post failed:', errorBody);
+					const message = (errorBody && (errorBody.message || errorBody.error)) || `投稿に失敗しました: ${response.status}`;
+					throw new Error(message);
+				}
+			} catch (e: any) {
+				if (e?.name === 'AbortError') throw new Error('投稿がタイムアウトしました');
+				throw e;
+			} finally {
+				clearTimeout(timeout);
+			}
 			new Notice('Blueskyに投稿しました！');
 			return true;
 		} catch (error) { new Notice(`投稿エラー: ${error.message}`); return false; }
@@ -154,6 +223,7 @@ class PostModal extends Modal {
 	private keyHandler: (e: KeyboardEvent) => void;
 	emojiPickerContainer!: HTMLElement;
 	private isEmojiPickerVisible: boolean = false;
+	private pendingLinkPreviewUrl: string | null = null;
 
 	constructor(app: App, plugin: BlueskyPlugin, initialText: string) {
 		super(app);
@@ -187,7 +257,7 @@ class PostModal extends Modal {
 
 		const mainEl = contentEl.createDiv({ cls: 'bluesky-modal-main' });
 		if (this.plugin.userAvatar) {
-			mainEl.createEl('img', { cls: 'bluesky-avatar', attr: { src: this.plugin.userAvatar } });
+			mainEl.createEl('img', { cls: 'bluesky-avatar', attr: { src: this.plugin.userAvatar, alt: 'User avatar' } });
 		}
 		this.textArea = mainEl.createEl('textarea', { cls: 'bluesky-textarea', attr: { placeholder: "最近どう？" } });
 
@@ -207,7 +277,8 @@ class PostModal extends Modal {
 		const footerRowEl = footerEl.createDiv({ cls: 'bluesky-footer-row' });
 		const actionsEl = footerRowEl.createDiv({ cls: 'bluesky-actions' });
 
-		this.fileInput = contentEl.createEl('input', { type: 'file', attr: { multiple: true, accept: 'image/*', style: 'display: none;' } });
+		this.fileInput = contentEl.createEl('input', { attr: { type: 'file', accept: 'image/*', style: 'display: none;' } });
+		this.fileInput.multiple = true;
 		this.fileInput.onchange = (e) => this.handleFileSelect(e);
 
 		// ホットキー表示付きの画像追加ボタン
@@ -249,7 +320,8 @@ class PostModal extends Modal {
 
 		setTimeout(() => {
 			this.textArea.focus();
-			this.textArea.setSelectionRange(this.initialText.length, this.initialText.length);
+			const end = this.textArea.value.length;
+			this.textArea.setSelectionRange(end, end);
 		}, 100);
 	}
 
@@ -376,6 +448,8 @@ class PostModal extends Modal {
 	// キーボードイベントハンドラー
 	handleKeyboard(e: KeyboardEvent) {
 		const settings = this.plugin.settings.hotkeys;
+		// IME変換中はショートカットを無視
+		if ((e as any).isComposing) return;
 
 		// キャンセル（Escape）
 		if (this.matchesHotkey(e, settings.cancel)) {
@@ -399,13 +473,23 @@ class PostModal extends Modal {
 			this.toggleEmojiPicker();
 			return;
 		}
+
+		// 画像追加（Ctrl+I）
+		if (this.matchesHotkey(e, settings.addImage)) {
+			e.preventDefault();
+			e.stopPropagation();
+			this.fileInput?.click();
+			return;
+		}
 	}
 
 	// ホットキーのマッチング関数
 	matchesHotkey(e: KeyboardEvent, hotkey: string): boolean {
 		const parts = hotkey.toLowerCase().split('+');
 		const key = parts[parts.length - 1];
-		const modifiers = parts.slice(0, -1);
+		const rawMods = parts.slice(0, -1);
+		const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
+		const modifiers = rawMods.map(m => (m === 'mod' ? (isMac ? 'meta' : 'ctrl') : m));
 
 		// キーの一致確認
 		let keyMatches = false;
@@ -448,37 +532,62 @@ class PostModal extends Modal {
 	handleFileSelect(event: Event) {
 		const files = (event.target as HTMLInputElement).files;
 		if (!files) return;
-		if (this.selectedImages.length + files.length > 4) {
-			new Notice('画像は最大4枚までです。');
-			return;
-		}
+		const remainingSlots = Math.max(0, 4 - this.selectedImages.length);
+		if (remainingSlots === 0) { new Notice('画像は最大4枚までです。'); (event.target as HTMLInputElement).value = ''; return; }
 		if (files.length > 0) {
 			this.linkPreviewData = null;
 			this.linkPreviewContainer.empty();
+			this.pendingLinkPreviewUrl = null;
 		}
-		Array.from(files).forEach(file => this.selectedImages.push(file));
+		const existing = new Set(this.selectedImages.map(f => `${f.name}|${f.size}|${f.lastModified}`));
+		const uniques: File[] = [];
+		for (const file of Array.from(files)) {
+			const key = `${file.name}|${file.size}|${file.lastModified}`;
+			if (existing.has(key)) continue;
+			uniques.push(file);
+			if (uniques.length >= remainingSlots) break;
+		}
+		this.selectedImages.push(...uniques);
 		this.updateImagePreviews();
+		// 同一ファイル再選択のためにクリア
+		this.fileInput.value = '';
 	}
 
 	updateImagePreviews() {
+		// Revoke existing object URLs before clearing to avoid memory leaks
+		this.imagePreviewContainer.querySelectorAll('img').forEach((el) => {
+			const imgEl = el as HTMLImageElement;
+			if (imgEl.src && imgEl.src.startsWith('blob:')) {
+				URL.revokeObjectURL(imgEl.src);
+			}
+		});
 		this.imagePreviewContainer.empty();
 		this.selectedImages.forEach((file, index) => {
 			const previewEl = this.imagePreviewContainer.createDiv({ cls: 'bluesky-image-preview' });
-			const img = previewEl.createEl('img');
-			img.src = URL.createObjectURL(file);
+			const img = previewEl.createEl('img', { attr: { alt: file.name || 'image' } });
+			const objectUrl = URL.createObjectURL(file);
+			img.src = objectUrl;
 			const removeBtn = previewEl.createDiv({ cls: 'bluesky-remove-image-btn' });
 			setIcon(removeBtn, 'x');
 			removeBtn.onclick = () => {
-				this.selectedImages.splice(index, 1);
+				const currentIndex = this.selectedImages.indexOf(file);
+				if (currentIndex !== -1) this.selectedImages.splice(currentIndex, 1);
+				if (img.src && img.src.startsWith('blob:')) {
+					URL.revokeObjectURL(img.src);
+				}
 				this.updateImagePreviews();
+				if (this.selectedImages.length === 0) {
+					// 画像が空ならリンクプレビューを再評価
+					this.updateLinkPreview();
+				}
 			};
 		});
 	}
 
 	updateCharCount() {
-		const byteLength = new TextEncoder().encode(this.textArea.value).length;
-		this.charCountEl.textContent = `${byteLength}/300`;
-		const isOverLimit = byteLength > 300;
+		const charCount = countGraphemes(this.textArea.value);
+		this.charCountEl.textContent = `${charCount}/300`;
+		const isOverLimit = charCount > 300;
 		this.charCountEl.toggleClass('bluesky-over-limit', isOverLimit);
 		this.postButton.setDisabled(isOverLimit);
 	}
@@ -490,14 +599,21 @@ class PostModal extends Modal {
 
 	async updateLinkPreview() {
 		if (this.selectedImages.length > 0) return;
-		const match = this.textArea.value.match(/https?:\/\/[^\s]+/);
-		const url = match ? match[0] : null;
+		const match = this.textArea.value.match(/https?:\/\/[^\s<>()\[\]{}"']+/);
+		const url = match ? match[0].replace(/[.,!?)\]\}]+$/, '') : null;
 		if (url && url === this.linkPreviewData?.url) return;
 		this.linkPreviewContainer.empty();
 		this.linkPreviewData = null;
 		if (url) {
-			this.linkPreviewData = await this.fetchLinkPreview(url);
+			this.pendingLinkPreviewUrl = url;
+			const data = await this.fetchLinkPreview(url);
+			if (this.pendingLinkPreviewUrl !== url) return;
+			// 画像選択が始まっていたら表示しない
+			if (this.selectedImages.length > 0) return;
+			this.linkPreviewData = data;
 			if (this.linkPreviewData) this.displayLinkPreview(this.linkPreviewData);
+		} else {
+			this.pendingLinkPreviewUrl = null;
 		}
 	}
 
@@ -505,14 +621,24 @@ class PostModal extends Modal {
 		try {
 			const response = await requestUrl({ url });
 			const doc = new DOMParser().parseFromString(response.text, 'text/html');
-			const getMeta = (prop: string) => doc.querySelector(`meta[property="${prop}"]`)?.getAttribute('content') || undefined;
+			const getOg = (prop: string) => doc.querySelector(`meta[property="${prop}"]`)?.getAttribute('content') || undefined;
+			const getName = (name: string) => doc.querySelector(`meta[name="${name}"]`)?.getAttribute('content') || undefined;
 			const titleElement = doc.querySelector('title');
 			const titleText = titleElement?.textContent?.trim() || undefined;
+			const baseHref = doc.querySelector('base[href]')?.getAttribute('href') || url;
+			const base = new URL(baseHref, url);
+			const resolve = (u?: string) => (u ? new URL(u, base).toString() : undefined);
+			const ogImageSecure = getOg('og:image:secure_url');
+			const ogImage = getOg('og:image');
+			const imageUrl = resolve(ogImageSecure || ogImage);
+			const rawTitle = getOg('og:title') || getName('twitter:title') || titleText || url;
+			const rawDesc = getOg('og:description') || getName('twitter:description') || getName('description') || '';
+			const clamp = (s?: string, max = 300) => s ? (s.length > max ? s.slice(0, max) : s) : s;
 			return {
 				url,
-				title: getMeta('og:title') || titleText || url,
-				description: getMeta('og:description') || getMeta('description') || '',
-				image: getMeta('og:image'),
+				title: clamp(rawTitle, 120),
+				description: clamp(rawDesc, 300),
+				image: imageUrl,
 				domain: new URL(url).hostname
 			};
 		} catch (error) {
@@ -538,7 +664,7 @@ class PostModal extends Modal {
 			new Notice('投稿内容を入力してください');
 			return;
 		}
-		this.postButton.setButtonText('Posting...').setDisabled(true);
+		this.postButton.setButtonText('投稿中…').setDisabled(true);
 		let embed: Embed | undefined;
 
 		if (this.selectedImages.length > 0) {
@@ -547,20 +673,29 @@ class PostModal extends Modal {
 					const imageBitmap = await createImageBitmap(file);
 					const { width, height } = imageBitmap;
 					const canvas = document.createElement('canvas');
-					canvas.width = width;
-					canvas.height = height;
+					const MAX_EDGE = 2048;
+					const scale = Math.min(1, MAX_EDGE / Math.max(width, height));
+					canvas.width = Math.max(1, Math.round(width * scale));
+					canvas.height = Math.max(1, Math.round(height * scale));
 					const ctx = canvas.getContext('2d');
 					if (!ctx) throw new Error('Failed to get canvas context');
-					ctx.drawImage(imageBitmap, 0, 0);
+					ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
+					imageBitmap.close();
 					const processedBlob = await new Promise<Blob>((resolve, reject) => {
-						canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')), file.type);
+						const fallbackType = file.type || 'image/jpeg';
+						const quality: number | undefined = fallbackType === 'image/jpeg' ? 0.92 : undefined;
+						canvas.toBlob(
+							(blob) => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')),
+							fallbackType,
+							quality
+						);
 					});
 					const buffer = await processedBlob.arrayBuffer();
 					const uploaded = await this.plugin.uploadBlob(buffer, processedBlob.type);
 					return {
 						image: uploaded.blob,
 						alt: '',
-						aspectRatio: { width, height }
+						aspectRatio: { width: canvas.width, height: canvas.height }
 					};
 				}));
 				embed = { $type: 'app.bsky.embed.images', images: uploadedImages };
@@ -575,7 +710,8 @@ class PostModal extends Modal {
 				try {
 					const imgResponse = await requestUrl({ url: this.linkPreviewData.image });
 					const blob = imgResponse.arrayBuffer;
-					const mimeType = imgResponse.headers['content-type'] || 'image/jpeg';
+					const ctEntry = Object.entries(imgResponse.headers).find(([k]) => k.toLowerCase() === 'content-type');
+					const mimeType = (ctEntry?.[1] as string) || 'image/jpeg';
 					const uploadedImage = await this.plugin.uploadBlob(blob, mimeType);
 					thumb = {
 						$type: 'blob' as const,
@@ -611,6 +747,13 @@ class PostModal extends Modal {
 
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
+		// 画像プレビューの blob URL を解放
+		try {
+			this.imagePreviewContainer?.querySelectorAll('img').forEach((el) => {
+				const src = (el as HTMLImageElement).src;
+				if (src?.startsWith('blob:')) URL.revokeObjectURL(src);
+			});
+		} catch {}
 		this.contentEl.empty();
 	}
 }
@@ -639,11 +782,28 @@ class BlueskySettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('App Password')
 			.setDesc('BlueskyのApp Password（設定から作成してください）')
-			.addText(text => text
-				.setPlaceholder('xxxx-xxxx-xxxx-xxxx')
-				.setValue(this.plugin.settings.password)
-				.onChange(async (value) => {
+			.addText(text => {
+				text.setPlaceholder('xxxx-xxxx-xxxx-xxxx')
+					.setValue(this.plugin.settings.password);
+				// パスワードをマスク
+				text.inputEl.type = 'password';
+				text.inputEl.autocomplete = 'current-password';
+				text.onChange(async (value) => {
 					this.plugin.settings.password = value;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName('Network Timeout (ms)')
+			.setDesc('Bluesky API呼び出しのタイムアウト（ミリ秒）')
+			.addText(text => text
+				.setPlaceholder('15000')
+				.setValue(String(this.plugin.settings.networkTimeoutMs ?? 15000))
+				.onChange(async (value) => {
+					const n = Number(value);
+					const clamped = Number.isFinite(n) ? Math.min(Math.max(Math.round(n), 1000), 60000) : 15000;
+					this.plugin.settings.networkTimeoutMs = clamped;
 					await this.plugin.saveSettings();
 				}));
 
@@ -674,34 +834,34 @@ class BlueskySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('投稿のホットキー')
-			.setDesc('投稿を送信するためのキー（デフォルト: Ctrl+Enter）')
+			.setDesc('投稿を送信するためのキー（デフォルト: Mod+Enter）')
 			.addText(text => text
-				.setPlaceholder('Ctrl+Enter')
+				.setPlaceholder('Mod+Enter')
 				.setValue(this.plugin.settings.hotkeys.post)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.post = value || 'Ctrl+Enter';
+					this.plugin.settings.hotkeys.post = value || 'Mod+Enter';
 					await this.plugin.saveSettings();
 				}));
 
 		new Setting(containerEl)
 			.setName('画像追加のホットキー')
-			.setDesc('画像を追加するためのキー（デフォルト: Ctrl+I）')
+			.setDesc('画像を追加するためのキー（デフォルト: Mod+I）')
 			.addText(text => text
-				.setPlaceholder('Ctrl+I')
+				.setPlaceholder('Mod+I')
 				.setValue(this.plugin.settings.hotkeys.addImage)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.addImage = value || 'Ctrl+I';
+					this.plugin.settings.hotkeys.addImage = value || 'Mod+I';
 					await this.plugin.saveSettings();
 				}));
 
 		new Setting(containerEl)
 			.setName('絵文字追加のホットキー')
-			.setDesc('絵文字ピッカーを開くためのキー（デフォルト: Ctrl+E）')
+			.setDesc('絵文字ピッカーを開くためのキー（デフォルト: Mod+E）')
 			.addText(text => text
-				.setPlaceholder('Ctrl+E')
+				.setPlaceholder('Mod+E')
 				.setValue(this.plugin.settings.hotkeys.emoji)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.emoji = value || 'Ctrl+E';
+					this.plugin.settings.hotkeys.emoji = value || 'Mod+E';
 					await this.plugin.saveSettings();
 				}));
 
@@ -711,7 +871,12 @@ class BlueskySettingTab extends PluginSettingTab {
 		});
 
 		containerEl.createEl('p', {
-			text: 'ホットキーの記法: Ctrl+Key, Shift+Key, Alt+Key, Meta+Key の組み合わせで指定してください。例: Ctrl+Shift+S',
+			text: 'ホットキーの記法: Mod(=Ctrl/⌘)+Key または Ctrl/Shift/Alt/Meta の組み合わせで指定してください。例: Mod+Shift+S',
+			cls: 'setting-item-description'
+		});
+
+		containerEl.createEl('p', {
+			text: '注意: OS/アプリ標準のショートカットと衝突する場合があります。動作しない場合は別の組み合わせに変更してください。',
 			cls: 'setting-item-description'
 		});
 	}
