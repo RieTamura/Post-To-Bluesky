@@ -33,11 +33,27 @@ interface Image { image: { $type: 'blob'; ref: { $link: string }; mimeType: stri
 interface ImageEmbed { $type: 'app.bsky.embed.images'; images: Image[]; }
 type Embed = ExternalEmbed | ImageEmbed;
 
+function countGraphemes(text: string): number {
+	// Prefer Intl.Segmenter if available; fallback to code points
+	try {
+		// @ts-ignore
+		if (typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
+			// @ts-ignore
+			const segmenter = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
+			let count = 0;
+			for (const _ of segmenter.segment(text)) count++;
+			return count;
+		}
+	} catch {}
+	return Array.from(text).length;
+}
+
 export default class BlueskyPlugin extends Plugin {
 	settings: BlueskyPluginSettings;
 	accessJwt: string = '';
 	refreshJwt: string = '';
 	userAvatar: string = '';
+	did: string = '';
 
 	async onload() {
 		await this.loadSettings();
@@ -79,7 +95,7 @@ export default class BlueskyPlugin extends Plugin {
 			const resp = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password }), });
 			if (!resp.ok) throw new Error(`ログインに失敗しました: ${resp.status}`);
 			const data = await resp.json();
-			this.accessJwt = data.accessJwt; this.refreshJwt = data.refreshJwt;
+			this.accessJwt = data.accessJwt; this.refreshJwt = data.refreshJwt; this.did = data.did;
 			try {
 				const profileResp = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${data.did}`, { headers: { 'Authorization': `Bearer ${this.accessJwt}` } });
 				if (profileResp.ok) { const profileData = await profileResp.json(); this.userAvatar = profileData.avatar || ''; }
@@ -117,7 +133,10 @@ export default class BlueskyPlugin extends Plugin {
 
 	async uploadBlob(blob: ArrayBuffer, mimeType: string, retried: boolean = false): Promise<any> {
 		if (!this.accessJwt) { if (!(await this.login())) throw new Error("ログインに失敗しました"); }
-		const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob });
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 15000);
+		const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
+		clearTimeout(timeout);
 		if (!response.ok) {
 			if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
 			throw new Error(`画像アップロードに失敗しました: ${response.status}`);
@@ -127,14 +146,17 @@ export default class BlueskyPlugin extends Plugin {
 
 	async postToBluesky(text: string, embed?: Embed, retried: boolean = false): Promise<boolean> {
 		if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) { new Notice('投稿内容が空です'); return false; }
-		if (new TextEncoder().encode(text).length > 300) { new Notice(`投稿が300バイトを超えています。テキストを短くしてください。`); return false; }
+		if (countGraphemes(text) > 300) { new Notice(`投稿が300文字を超えています。テキストを短くしてください。`); return false; }
 		if (!this.accessJwt) { if (!(await this.login())) return false; }
 		try {
 			const record: any = { text: text, createdAt: new Date().toISOString(), $type: 'app.bsky.feed.post' };
 			const facets = this.detectFacets(text);
 			if (facets) record.facets = facets;
 			if (embed) record.embed = embed;
-			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.settings.handle, collection: 'app.bsky.feed.post', record: record }) });
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 15000);
+			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.did || this.settings.handle, collection: 'app.bsky.feed.post', record: record }), signal: controller.signal });
+			clearTimeout(timeout);
 			if (!response.ok) {
 				if (response.status === 401 && !retried && (await this.login())) return this.postToBluesky(text, embed, true);
 				const errorBody = await response.json().catch(() => ({}));
@@ -196,7 +218,7 @@ class PostModal extends Modal {
 
 		const mainEl = contentEl.createDiv({ cls: 'bluesky-modal-main' });
 		if (this.plugin.userAvatar) {
-			mainEl.createEl('img', { cls: 'bluesky-avatar', attr: { src: this.plugin.userAvatar } });
+			mainEl.createEl('img', { cls: 'bluesky-avatar', attr: { src: this.plugin.userAvatar, alt: 'User avatar' } });
 		}
 		this.textArea = mainEl.createEl('textarea', { cls: 'bluesky-textarea', attr: { placeholder: "最近どう？" } });
 
@@ -413,6 +435,7 @@ class PostModal extends Modal {
 		// 画像追加（Ctrl+I）
 		if (this.matchesHotkey(e, settings.addImage)) {
 			e.preventDefault();
+			e.stopPropagation();
 			this.fileInput?.click();
 			return;
 		}
@@ -465,16 +488,16 @@ class PostModal extends Modal {
 	handleFileSelect(event: Event) {
 		const files = (event.target as HTMLInputElement).files;
 		if (!files) return;
-		if (this.selectedImages.length + files.length > 4) {
-			new Notice('画像は最大4枚までです。');
-			return;
-		}
+		const remainingSlots = Math.max(0, 4 - this.selectedImages.length);
+		if (remainingSlots === 0) { new Notice('画像は最大4枚までです。'); (event.target as HTMLInputElement).value = ''; return; }
 		if (files.length > 0) {
 			this.linkPreviewData = null;
 			this.linkPreviewContainer.empty();
 		}
-		Array.from(files).forEach(file => this.selectedImages.push(file));
+		Array.from(files).slice(0, remainingSlots).forEach(file => this.selectedImages.push(file));
 		this.updateImagePreviews();
+		// 同一ファイル再選択のためにクリア
+		this.fileInput.value = '';
 	}
 
 	updateImagePreviews() {
@@ -506,8 +529,9 @@ class PostModal extends Modal {
 
 	updateCharCount() {
 		const byteLength = new TextEncoder().encode(this.textArea.value).length;
-		this.charCountEl.textContent = `${byteLength}/300`;
-		const isOverLimit = byteLength > 300;
+		const charCount = countGraphemes(this.textArea.value);
+		this.charCountEl.textContent = `${charCount}/300`;
+		const isOverLimit = charCount > 300;
 		this.charCountEl.toggleClass('bluesky-over-limit', isOverLimit);
 		this.postButton.setDisabled(isOverLimit);
 	}
@@ -593,7 +617,8 @@ class PostModal extends Modal {
 					imageBitmap.close();
 					const processedBlob = await new Promise<Blob>((resolve, reject) => {
 						const fallbackType = file.type || 'image/jpeg';
-						canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')), fallbackType);
+						const quality = fallbackType === 'image/jpeg' ? 0.92 : undefined;
+						canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')), fallbackType, quality as any);
 					});
 					const buffer = await processedBlob.arrayBuffer();
 					const uploaded = await this.plugin.uploadBlob(buffer, processedBlob.type);
