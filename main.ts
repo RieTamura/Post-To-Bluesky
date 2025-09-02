@@ -164,6 +164,7 @@ export default class BlueskyPlugin extends Plugin {
 		if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) { new Notice('投稿内容が空です'); return false; }
 		if (countGraphemes(text) > 300) { new Notice(`投稿が300文字を超えています。テキストを短くしてください。`); return false; }
 		if (!this.accessJwt) { if (!(await this.login())) return false; }
+		if (!this.did) { if (!(await this.login())) return false; }
 		try {
 			const record: any = { text: text, createdAt: new Date().toISOString(), $type: 'app.bsky.feed.post' };
 			const facets = this.detectFacets(text);
@@ -172,7 +173,7 @@ export default class BlueskyPlugin extends Plugin {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
 			try {
-				const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.did || this.settings.handle, collection: 'app.bsky.feed.post', record: record }), signal: controller.signal });
+				const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.did, collection: 'app.bsky.feed.post', record: record }), signal: controller.signal });
 				if (!response.ok) {
 					if (response.status === 401 && !retried && (await this.login())) return this.postToBluesky(text, embed, true);
 					const errorBody = await response.json().catch(() => ({}));
