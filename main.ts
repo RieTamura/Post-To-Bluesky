@@ -6,6 +6,7 @@ interface BlueskyPluginSettings {
 	handle: string;
 	password: string;
 	defaultHashtags: string;
+	networkTimeoutMs?: number;
 	// ホットキー設定を追加
 	hotkeys: {
 		cancel: string;
@@ -19,6 +20,7 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	handle: '',
 	password: '',
 	defaultHashtags: '',
+	networkTimeoutMs: 15000,
 	hotkeys: {
 		cancel: 'Escape',
 		post: 'Ctrl+Enter',
@@ -138,7 +140,7 @@ export default class BlueskyPlugin extends Plugin {
 	async uploadBlob(blob: ArrayBuffer, mimeType: string, retried: boolean = false): Promise<any> {
 		if (!this.accessJwt) { if (!(await this.login())) throw new Error("ログインに失敗しました"); }
 		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 15000);
+		const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
 		try {
 			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
 			if (!response.ok) {
@@ -166,7 +168,7 @@ export default class BlueskyPlugin extends Plugin {
 			if (facets) record.facets = facets;
 			if (embed) record.embed = embed;
 			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), 15000);
+			const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
 			try {
 				const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.did || this.settings.handle, collection: 'app.bsky.feed.post', record: record }), signal: controller.signal });
 				if (!response.ok) {
@@ -428,6 +430,8 @@ class PostModal extends Modal {
 	// キーボードイベントハンドラー
 	handleKeyboard(e: KeyboardEvent) {
 		const settings = this.plugin.settings.hotkeys;
+		// IME変換中はショートカットを無視
+		if ((e as any).isComposing) return;
 
 		// キャンセル（Escape）
 		if (this.matchesHotkey(e, settings.cancel)) {
@@ -515,6 +519,7 @@ class PostModal extends Modal {
 		if (files.length > 0) {
 			this.linkPreviewData = null;
 			this.linkPreviewContainer.empty();
+			this.pendingLinkPreviewUrl = null;
 		}
 		Array.from(files).slice(0, remainingSlots).forEach(file => this.selectedImages.push(file));
 		this.updateImagePreviews();
@@ -573,6 +578,8 @@ class PostModal extends Modal {
 			this.pendingLinkPreviewUrl = url;
 			const data = await this.fetchLinkPreview(url);
 			if (this.pendingLinkPreviewUrl !== url) return;
+			// 画像選択が始まっていたら表示しない
+			if (this.selectedImages.length > 0) return;
 			this.linkPreviewData = data;
 			if (this.linkPreviewData) this.displayLinkPreview(this.linkPreviewData);
 		} else {
@@ -588,8 +595,9 @@ class PostModal extends Modal {
 			const getName = (name: string) => doc.querySelector(`meta[name="${name}"]`)?.getAttribute('content') || undefined;
 			const titleElement = doc.querySelector('title');
 			const titleText = titleElement?.textContent?.trim() || undefined;
-			const base = new URL(url);
-			const resolve = (u?: string) => u ? new URL(u, base).toString() : undefined;
+			const baseHref = doc.querySelector('base[href]')?.getAttribute('href') || url;
+			const base = new URL(baseHref, url);
+			const resolve = (u?: string) => (u ? new URL(u, base).toString() : undefined);
 			const ogImageSecure = getOg('og:image:secure_url');
 			const ogImage = getOg('og:image');
 			const imageUrl = resolve(ogImageSecure || ogImage);
@@ -640,8 +648,12 @@ class PostModal extends Modal {
 					imageBitmap.close();
 					const processedBlob = await new Promise<Blob>((resolve, reject) => {
 						const fallbackType = file.type || 'image/jpeg';
-						const quality = fallbackType === 'image/jpeg' ? 0.92 : undefined;
-						canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')), fallbackType, quality as any);
+						const quality: number | undefined = fallbackType === 'image/jpeg' ? 0.92 : undefined;
+						canvas.toBlob(
+							(blob) => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')),
+							fallbackType,
+							quality
+						);
 					});
 					const buffer = await processedBlob.arrayBuffer();
 					const uploaded = await this.plugin.uploadBlob(buffer, processedBlob.type);
@@ -735,11 +747,27 @@ class BlueskySettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('App Password')
 			.setDesc('BlueskyのApp Password（設定から作成してください）')
-			.addText(text => text
-				.setPlaceholder('xxxx-xxxx-xxxx-xxxx')
-				.setValue(this.plugin.settings.password)
-				.onChange(async (value) => {
+			.addText(text => {
+				text.setPlaceholder('xxxx-xxxx-xxxx-xxxx')
+					.setValue(this.plugin.settings.password);
+				// パスワードをマスク
+				text.inputEl.type = 'password';
+				text.inputEl.autocomplete = 'current-password';
+				text.onChange(async (value) => {
 					this.plugin.settings.password = value;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName('Network Timeout (ms)')
+			.setDesc('Bluesky API呼び出しのタイムアウト（ミリ秒）')
+			.addText(text => text
+				.setPlaceholder('15000')
+				.setValue(String(this.plugin.settings.networkTimeoutMs ?? 15000))
+				.onChange(async (value) => {
+					const n = Number(value);
+					this.plugin.settings.networkTimeoutMs = Number.isFinite(n) && n > 0 ? n : 15000;
 					await this.plugin.saveSettings();
 				}));
 
