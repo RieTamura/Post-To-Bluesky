@@ -39,9 +39,13 @@ function countGraphemes(text: string): number {
 		// @ts-ignore
 		if (typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
 			// @ts-ignore
-			const segmenter = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
+			if (!(countGraphemes as any)._seg) {
+				// @ts-ignore
+				(countGraphemes as any)._seg = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
+			}
+			const seg = (countGraphemes as any)._seg;
 			let count = 0;
-			for (const _ of segmenter.segment(text)) count++;
+			for (const _ of seg.segment(text)) count++;
 			return count;
 		}
 	} catch {}
@@ -139,7 +143,9 @@ export default class BlueskyPlugin extends Plugin {
 			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
 			if (!response.ok) {
 				if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
-				throw new Error(`画像アップロードに失敗しました: ${response.status}`);
+				const errorBody = await response.json().catch(() => ({}));
+				const message = (errorBody && (errorBody.message || errorBody.error)) || `画像アップロードに失敗しました: ${response.status}`;
+				throw new Error(message);
 			}
 			return await response.json();
 		} catch (e: any) {
@@ -459,7 +465,9 @@ class PostModal extends Modal {
 	matchesHotkey(e: KeyboardEvent, hotkey: string): boolean {
 		const parts = hotkey.toLowerCase().split('+');
 		const key = parts[parts.length - 1];
-		const modifiers = parts.slice(0, -1);
+		const rawMods = parts.slice(0, -1);
+		const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
+		const modifiers = rawMods.map(m => (m === 'mod' ? (isMac ? 'meta' : 'ctrl') : m));
 
 		// キーの一致確認
 		let keyMatches = false;
@@ -542,7 +550,6 @@ class PostModal extends Modal {
 	}
 
 	updateCharCount() {
-		const byteLength = new TextEncoder().encode(this.textArea.value).length;
 		const charCount = countGraphemes(this.textArea.value);
 		this.charCountEl.textContent = `${charCount}/300`;
 		const isOverLimit = charCount > 300;
@@ -656,7 +663,8 @@ class PostModal extends Modal {
 				try {
 					const imgResponse = await requestUrl({ url: this.linkPreviewData.image });
 					const blob = imgResponse.arrayBuffer;
-					const mimeType = imgResponse.headers['content-type'] || 'image/jpeg';
+					const ctEntry = Object.entries(imgResponse.headers).find(([k]) => k.toLowerCase() === 'content-type');
+					const mimeType = (ctEntry?.[1] as string) || 'image/jpeg';
 					const uploadedImage = await this.plugin.uploadBlob(blob, mimeType);
 					thumb = {
 						$type: 'blob' as const,
@@ -764,7 +772,7 @@ class BlueskySettingTab extends PluginSettingTab {
 			.setName('投稿のホットキー')
 			.setDesc('投稿を送信するためのキー（デフォルト: Ctrl+Enter）')
 			.addText(text => text
-				.setPlaceholder('Ctrl+Enter')
+				.setPlaceholder('Mod+Enter')
 				.setValue(this.plugin.settings.hotkeys.post)
 				.onChange(async (value) => {
 					this.plugin.settings.hotkeys.post = value || 'Ctrl+Enter';
@@ -775,7 +783,7 @@ class BlueskySettingTab extends PluginSettingTab {
 			.setName('画像追加のホットキー')
 			.setDesc('画像を追加するためのキー（デフォルト: Ctrl+I）')
 			.addText(text => text
-				.setPlaceholder('Ctrl+I')
+				.setPlaceholder('Mod+I')
 				.setValue(this.plugin.settings.hotkeys.addImage)
 				.onChange(async (value) => {
 					this.plugin.settings.hotkeys.addImage = value || 'Ctrl+I';
@@ -786,7 +794,7 @@ class BlueskySettingTab extends PluginSettingTab {
 			.setName('絵文字追加のホットキー')
 			.setDesc('絵文字ピッカーを開くためのキー（デフォルト: Ctrl+E）')
 			.addText(text => text
-				.setPlaceholder('Ctrl+E')
+				.setPlaceholder('Mod+E')
 				.setValue(this.plugin.settings.hotkeys.emoji)
 				.onChange(async (value) => {
 					this.plugin.settings.hotkeys.emoji = value || 'Ctrl+E';
