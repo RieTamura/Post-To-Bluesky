@@ -119,7 +119,7 @@ export default class BlueskyPlugin extends Plugin {
 		while ((match = hashtagRegex.exec(text)) !== null) {
 			const tag = match[0];
 			const tagWithoutHash = tag.slice(1);
-			if (tagWithoutHash.length > 64) continue;
+			if (countGraphemes(tagWithoutHash) > 64) continue;
 			const byteStart = encoder.encode(text.slice(0, match.index)).length;
 			const byteEnd = byteStart + encoder.encode(tag).length;
 			facets.push({ index: { byteStart, byteEnd }, features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }] });
@@ -135,13 +135,19 @@ export default class BlueskyPlugin extends Plugin {
 		if (!this.accessJwt) { if (!(await this.login())) throw new Error("ログインに失敗しました"); }
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 15000);
-		const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
-		clearTimeout(timeout);
-		if (!response.ok) {
-			if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
-			throw new Error(`画像アップロードに失敗しました: ${response.status}`);
+		try {
+			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', { method: 'POST', headers: { 'Content-Type': mimeType, 'Authorization': `Bearer ${this.accessJwt}` }, body: blob, signal: controller.signal });
+			if (!response.ok) {
+				if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
+				throw new Error(`画像アップロードに失敗しました: ${response.status}`);
+			}
+			return await response.json();
+		} catch (e: any) {
+			if (e?.name === 'AbortError') throw new Error('画像アップロードがタイムアウトしました');
+			throw e;
+		} finally {
+			clearTimeout(timeout);
 		}
-		return await response.json();
 	}
 
 	async postToBluesky(text: string, embed?: Embed, retried: boolean = false): Promise<boolean> {
@@ -155,13 +161,20 @@ export default class BlueskyPlugin extends Plugin {
 			if (embed) record.embed = embed;
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), 15000);
-			const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.did || this.settings.handle, collection: 'app.bsky.feed.post', record: record }), signal: controller.signal });
-			clearTimeout(timeout);
-			if (!response.ok) {
-				if (response.status === 401 && !retried && (await this.login())) return this.postToBluesky(text, embed, true);
-				const errorBody = await response.json().catch(() => ({}));
-				console.error('Bluesky post failed:', errorBody);
-				throw new Error(`投稿に失敗しました: ${response.status}`);
+			try {
+				const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.accessJwt}` }, body: JSON.stringify({ repo: this.did || this.settings.handle, collection: 'app.bsky.feed.post', record: record }), signal: controller.signal });
+				if (!response.ok) {
+					if (response.status === 401 && !retried && (await this.login())) return this.postToBluesky(text, embed, true);
+					const errorBody = await response.json().catch(() => ({}));
+					console.error('Bluesky post failed:', errorBody);
+					const message = (errorBody && (errorBody.message || errorBody.error)) || `投稿に失敗しました: ${response.status}`;
+					throw new Error(message);
+				}
+			} catch (e: any) {
+				if (e?.name === 'AbortError') throw new Error('投稿がタイムアウトしました');
+				throw e;
+			} finally {
+				clearTimeout(timeout);
 			}
 			new Notice('Blueskyに投稿しました！');
 			return true;
@@ -238,7 +251,8 @@ class PostModal extends Modal {
 		const footerRowEl = footerEl.createDiv({ cls: 'bluesky-footer-row' });
 		const actionsEl = footerRowEl.createDiv({ cls: 'bluesky-actions' });
 
-		this.fileInput = contentEl.createEl('input', { attr: { type: 'file', multiple: 'true', accept: 'image/*', style: 'display: none;' } });
+		this.fileInput = contentEl.createEl('input', { attr: { type: 'file', accept: 'image/*', style: 'display: none;' } });
+		this.fileInput.multiple = true;
 		this.fileInput.onchange = (e) => this.handleFileSelect(e);
 
 		// ホットキー表示付きの画像追加ボタン
@@ -554,6 +568,8 @@ class PostModal extends Modal {
 			if (this.pendingLinkPreviewUrl !== url) return;
 			this.linkPreviewData = data;
 			if (this.linkPreviewData) this.displayLinkPreview(this.linkPreviewData);
+		} else {
+			this.pendingLinkPreviewUrl = null;
 		}
 	}
 
@@ -572,8 +588,8 @@ class PostModal extends Modal {
 			const imageUrl = resolve(ogImageSecure || ogImage);
 			return {
 				url,
-				title: getOg('og:title') || titleText || url,
-				description: getOg('og:description') || getName('description') || '',
+				title: getOg('og:title') || getName('twitter:title') || titleText || url,
+				description: getOg('og:description') || getName('twitter:description') || getName('description') || '',
 				image: imageUrl,
 				domain: new URL(url).hostname
 			};
