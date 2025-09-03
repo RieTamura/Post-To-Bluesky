@@ -260,8 +260,12 @@ export const en: LocaleStrings = {
 
 // 現在の言語を取得する関数
 export function getCurrentLocale(): LocaleStrings {
-  // ブラウザの言語設定を確認
-  const browserLang = navigator.language || (Array.isArray(navigator.languages) && navigator.languages.length > 0 ? navigator.languages[0] : undefined) || 'en';
+  // ブラウザの言語設定を確認（SSR/テスト環境での安全性を確保）
+  let browserLang = 'en'; // デフォルトフォールバック
+  
+  if (typeof navigator !== 'undefined') {
+    browserLang = navigator.language || (Array.isArray(navigator.languages) && navigator.languages.length > 0 ? navigator.languages[0] : undefined) || 'en';
+  }
   
   // 日本語の場合は日本語版を返す
   if (browserLang.startsWith('ja')) {

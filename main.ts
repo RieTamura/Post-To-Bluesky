@@ -896,6 +896,90 @@ class BlueskySettingTab extends PluginSettingTab {
 	}
 
 	/**
+	 * ホットキーを正規化する
+	 * - 小文字に変換
+	 * - 修飾子の別名を標準名にマッピング
+	 * - 修飾子を標準順序でソート
+	 * - 等価なホットキーを同じ文字列に正規化
+	 */
+	private normalizeHotkey(hotkey: string): string {
+		if (!hotkey || !hotkey.trim()) return '';
+		
+		// 小文字に変換して空白を除去
+		let normalized = hotkey.toLowerCase().trim();
+		
+		// 修飾子の別名を標準名にマッピング
+		const modifierAliases: Record<string, string> = {
+			'cmd': 'meta',
+			'command': 'meta',
+			'control': 'ctrl',
+			'option': 'alt',
+			'windows': 'meta',
+			'win': 'meta',
+			'mod': (typeof process !== 'undefined' && process.platform === 'darwin') ? 'meta' : 'ctrl' // プラットフォームに応じてmodを動的にマッピング（macOS: meta、Windows/Linux: ctrl）
+		};
+		
+		// 修飾子の標準順序
+		const modifierOrder = ['ctrl', 'alt', 'shift', 'meta'];
+		
+		// 修飾子とメインキーを分離
+		const parts = normalized.split(/[+\s]+/).filter(part => part.length > 0);
+		const modifiersSet = new Set<string>(); // 配列ではなくSetを使用して重複を効率的に除去
+		let mainKey = '';
+		
+		parts.forEach(part => {
+			// 修飾子の別名を標準名に変換
+			const standardModifier = modifierAliases[part] || part;
+			
+			// 修飾子かどうかを判定（標準順序に含まれるか、または別名から変換されたもの）
+			if (modifierOrder.includes(standardModifier)) {
+				modifiersSet.add(standardModifier); // Setに追加（自動的に重複除去）
+			} else {
+				// メインキー（修飾子でない場合）
+				mainKey = part;
+			}
+		});
+		
+		// 修飾子を標準順序でソート（Setから標準順序に従って選択）
+		const sortedModifiers = modifierOrder
+			.filter(modifier => modifiersSet.has(modifier)); // modifierOrderを反復して、Setに存在する修飾子を標準順序で選択
+		
+		// 正規化されたホットキーを構築
+		if (sortedModifiers.length > 0) {
+			return sortedModifiers.join('+') + '+' + mainKey;
+		} else {
+			return mainKey;
+		}
+	}
+
+	/**
+	 * 重複するホットキーを見つける
+	 */
+	private findDuplicateHotkeys(hotkeys: string[]): string[] {
+		const duplicatesSet = new Set<string>();
+		const seen = new Set<string>();
+
+		hotkeys.forEach(hotkey => {
+			// ホットキーを高度に正規化
+			const normalizedHotkey = this.normalizeHotkey(hotkey);
+			
+			// 空文字列の場合はスキップ
+			if (!normalizedHotkey) return;
+			
+			// 既に見た正規化ホットキーの場合、現在の元のホットキーを重複として追加
+			if (seen.has(normalizedHotkey)) {
+				duplicatesSet.add(hotkey);
+			}
+			
+			// 毎回正規化されたホットキーをseenセットに追加
+			seen.add(normalizedHotkey);
+		});
+
+		// Setを配列に変換して返す（各重複は1回だけ報告される）
+		return Array.from(duplicatesSet);
+	}
+
+	/**
 	 * ホットキー衝突をチェックして警告を表示
 	 */
 	private checkHotkeyConflicts(): void {
@@ -943,30 +1027,5 @@ class BlueskySettingTab extends PluginSettingTab {
 		} else {
 			this.conflictWarningEl.style.display = 'none';
 		}
-	}
-
-	/**
-	 * 重複するホットキーを見つける
-	 */
-	private findDuplicateHotkeys(hotkeys: string[]): string[] {
-		const duplicatesSet = new Set<string>();
-		const seen = new Set<string>();
-
-		hotkeys.forEach(hotkey => {
-			// ホットキーを正規化（空白を除去）
-			const normalizedHotkey = hotkey.trim();
-			
-			// 空文字列の場合はスキップ
-			if (!normalizedHotkey) return;
-			
-			// 既に見たホットキーで、まだ重複セットに追加されていない場合
-			if (seen.has(normalizedHotkey) && !duplicatesSet.has(normalizedHotkey)) {
-				duplicatesSet.add(normalizedHotkey);
-			}
-			seen.add(normalizedHotkey);
-		});
-
-		// Setを配列に変換して返す（各重複は1回だけ報告される）
-		return Array.from(duplicatesSet);
 	}
 }

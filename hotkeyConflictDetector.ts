@@ -1,6 +1,5 @@
 // hotkeyConflictDetector.ts - ホットキー衝突検出機能
-
-import { getCurrentLocale, ja, en } from './locales';
+import { getCurrentLocale, ja, en, type LocaleStrings } from './locales';
 
 export interface HotkeyConflict {
   type: 'browser' | 'os' | 'common';
@@ -28,7 +27,8 @@ export class HotkeyConflictDetector {
     'cmd': 'Meta',
     'command': 'Meta',
     'windows': 'Meta',
-    'win': 'Meta'
+    'win': 'Meta',
+    'mod': 'Meta' // modエイリアスをMetaにマッピング（main.tsと一貫性を保つ）
   };
 
   // 一般的なブラウザショートカット
@@ -122,29 +122,15 @@ export class HotkeyConflictDetector {
 
   /**
    * ホットキー文字列を解析してキーと修飾子に分解する
+   * main.tsと一貫性を保つため、modトークンをmetaに正規化
    */
   static parseHotkey(hotkey: string): { key: string; modifiers: string[] } {
     const parts = hotkey.toLowerCase().split('+');
     const key = parts[parts.length - 1];
     const modifiers = parts.slice(0, -1).map(m => {
+      // modトークンをmetaに正規化（main.tsと一貫性を保つ）
       if (m === 'mod') {
-        // OSに応じてModを適切な修飾子に変換
-        const isMac = typeof navigator !== 'undefined' && (() => {
-          // 1. navigator.userAgentData?.platformを最初にチェック（最新の標準）
-          if ('userAgentData' in navigator && (navigator.userAgentData as any)?.platform) {
-            return /mac/i.test((navigator.userAgentData as any).platform);
-          }
-          
-          // 2. navigator.userAgentでApple識別子を検索
-          if (navigator.userAgent) {
-            const appleIdentifiers = /Mac|iPhone|iPad|iPod|Macintosh/i;
-            return appleIdentifiers.test(navigator.userAgent);
-          }
-          
-          // 3. 最後の手段としてnavigator.platformを使用
-          return /mac/i.test(navigator.platform);
-        })();
-        return isMac ? 'cmd' : 'ctrl';
+        return 'meta';
       }
       return m;
     });
@@ -154,6 +140,7 @@ export class HotkeyConflictDetector {
 
   /**
    * 2つのホットキーが衝突するかチェック
+   * CtrlとCmdを同等に扱い、プラットフォーム間での一貫性を確保
    */
   static checkConflict(hotkey1: string, hotkey2: string): boolean {
     const parsed1 = this.parseHotkey(hotkey1);
@@ -164,9 +151,26 @@ export class HotkeyConflictDetector {
       const mods1 = new Set(parsed1.modifiers);
       const mods2 = new Set(parsed2.modifiers);
       
-      if (mods1.size === mods2.size) {
-        for (const mod of mods1) {
-          if (!mods2.has(mod)) return false;
+      // CtrlとCmdを同等に扱うための正規化
+      const normalizeModifiers = (mods: Set<string>) => {
+        const normalized = new Set<string>();
+        for (const mod of mods) {
+          if (mod === 'ctrl' || mod === 'cmd') {
+            // CtrlとCmdを単一の正規化されたトークン'meta'にマッピング（main.tsと一貫性を保つ）
+            normalized.add('meta');
+          } else {
+            normalized.add(mod);
+          }
+        }
+        return normalized;
+      };
+      
+      const normalizedMods1 = normalizeModifiers(mods1);
+      const normalizedMods2 = normalizeModifiers(mods2);
+      
+      if (normalizedMods1.size === normalizedMods2.size) {
+        for (const mod of normalizedMods1) {
+          if (!normalizedMods2.has(mod)) return false;
         }
         return true;
       }
@@ -216,17 +220,37 @@ export class HotkeyConflictDetector {
     }
     
     // 特に重要なショートカットとの衝突はエラーとして扱う
-    // 特に重要なショートカットとの衝突はエラーとして扱う
-    const criticalShortcuts = ['ctrl+s', 'ctrl+c', 'ctrl+v', 'ctrl+z', 'ctrl+a'];
+    // プラットフォームに依存しない重要なショートカット（mod+*）
+    const criticalShortcuts = [
+      'mod+s', 'mod+c', 'mod+v', 'mod+z', 'mod+a'
+    ];
+    
     if (criticalShortcuts.some(critical => this.checkConflict(hotkey, critical))) {
       // 既存の衝突エントリの重要度を更新
       conflicts.forEach(conflict => {
-        if (
-          conflict.type === 'browser' &&
-          criticalShortcuts.some(crit =>
-            conflict.description.toLowerCase().includes(crit)
-          )
-        ) {
+        // 大文字小文字を区別しない比較で、重要なショートカットとの衝突をチェック
+        const conflictDescLower = conflict.description.toLowerCase();
+        const hasCriticalConflict = criticalShortcuts.some(crit => {
+          const critLower = crit.toLowerCase();
+          
+          // modトークンが含まれる場合、Ctrl/Cmdの両方のバリエーションを作成してチェック
+          if (critLower.includes('mod')) {
+            // modトークンを境界を考慮して置換（部分文字列ではなく、トークンレベルで置換）
+            const ctrlVariant = critLower.replace(/\bmod\b/g, 'ctrl');
+            const cmdVariant = critLower.replace(/\bmod\b/g, 'cmd');
+            
+            // 各バリエーションに対して衝突をチェック
+            return conflictDescLower.includes(critLower) ||
+                   conflictDescLower.includes(ctrlVariant) ||
+                   conflictDescLower.includes(cmdVariant);
+          } else {
+            // modトークンが含まれない場合は、そのまま比較
+            return conflictDescLower.includes(critLower);
+          }
+        });
+        
+        // browser、os、commonのいずれのタイプでも重要なショートカットと衝突する場合はエラーに昇格
+        if (hasCriticalConflict) {
           conflict.severity = 'error';
         }
       });
@@ -253,8 +277,8 @@ export class HotkeyConflictDetector {
       return aIndex - bIndex;
     });
     
-    // モディファイアとキーを結合
-    return [...sortedModifiers, info.key].join('+');
+    // モディファイアとキーを結合（キーは小文字に正規化）
+    return [...sortedModifiers, info.key?.toLowerCase() || ''].join('+');
   }
 
   /**
@@ -264,7 +288,7 @@ export class HotkeyConflictDetector {
     if (conflicts.length === 0) return '';
     
     // ロケールを取得（指定されていない場合は現在のロケールを使用）
-    const currentLocale = locale ? (locale.startsWith('ja') ? 'ja' : 'en') : getCurrentLocale();
+    const currentLocale = String(locale ?? getCurrentLocale() ?? '').toLowerCase().startsWith('ja') ? 'ja' : 'en';
     const localeStrings = currentLocale === 'ja' ? ja : en;
     
     const browserConflicts = conflicts.filter(c => c.type === 'browser');

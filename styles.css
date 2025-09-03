@@ -300,9 +300,6 @@
 	font-size: 14px;
 	line-height: 1.4;
 	display: none;
-}
-
-.hotkey-conflict-warning {
 	background-color: #fff3cd;
 	border: 1px solid #ffeaa7;
 	color: #856404;
