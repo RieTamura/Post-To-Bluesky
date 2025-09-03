@@ -69,6 +69,11 @@ export interface LocaleStrings {
   browserShortcuts: string;
   osShortcuts: string;
   
+  // ホットキー衝突説明（generateConflictDescription用）
+  browserShortcutsLabel: string;
+  osShortcutsLabel: string;
+  commonShortcutsLabel: string;
+  
   // プレースホルダー
   placeholderText: string;
   handlePlaceholder: string;
@@ -149,6 +154,11 @@ export const ja: LocaleStrings = {
   commonShortcuts: '一般的なショートカット',
   browserShortcuts: 'ブラウザショートカット',
   osShortcuts: 'OSショートカット',
+  
+  // ホットキー衝突説明（generateConflictDescription用）
+  browserShortcutsLabel: 'ブラウザショートカット: ',
+  osShortcutsLabel: 'OSショートカット: ',
+  commonShortcutsLabel: '一般的なショートカット: ',
   
   // プレースホルダー
   placeholderText: '最近どう？',
@@ -231,6 +241,11 @@ export const en: LocaleStrings = {
   browserShortcuts: 'Browser Shortcuts',
   osShortcuts: 'OS Shortcuts',
   
+  // ホットキー衝突説明（generateConflictDescription用）
+  browserShortcutsLabel: 'Browser Shortcuts: ',
+  osShortcutsLabel: 'OS Shortcuts: ',
+  commonShortcutsLabel: 'Common Shortcuts: ',
+  
   // プレースホルダー
   placeholderText: 'What\'s happening?',
   handlePlaceholder: 'username.bsky.social',
@@ -246,7 +261,7 @@ export const en: LocaleStrings = {
 // 現在の言語を取得する関数
 export function getCurrentLocale(): LocaleStrings {
   // ブラウザの言語設定を確認
-  const browserLang = navigator.language || navigator.languages?.[0] || 'en';
+  const browserLang = navigator.language || (Array.isArray(navigator.languages) && navigator.languages.length > 0 ? navigator.languages[0] : undefined) || 'en';
   
   // 日本語の場合は日本語版を返す
   if (browserLang.startsWith('ja')) {

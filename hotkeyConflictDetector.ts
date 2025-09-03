@@ -1,5 +1,7 @@
 // hotkeyConflictDetector.ts - ホットキー衝突検出機能
 
+import { getCurrentLocale, ja, en } from './locales';
+
 export interface HotkeyConflict {
   type: 'browser' | 'os' | 'common';
   description: string;
@@ -13,6 +15,22 @@ export interface HotkeyInfo {
 }
 
 export class HotkeyConflictDetector {
+  // 標準的なモディファイアの順序（一貫性のあるホットキー文字列生成のため）
+  private static readonly CANONICAL_MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Meta'];
+  
+  // 有効なモディファイア名のマッピング（異なる表記を統一）
+  private static readonly MODIFIER_MAPPING: Record<string, string> = {
+    'ctrl': 'Ctrl',
+    'control': 'Ctrl',
+    'alt': 'Alt',
+    'shift': 'Shift',
+    'meta': 'Meta',
+    'cmd': 'Meta',
+    'command': 'Meta',
+    'windows': 'Meta',
+    'win': 'Meta'
+  };
+
   // 一般的なブラウザショートカット
   private static readonly BROWSER_SHORTCUTS: HotkeyInfo[] = [
     { key: 's', modifiers: ['ctrl'], displayName: 'Ctrl+S (保存)' },
@@ -70,7 +88,7 @@ export class HotkeyConflictDetector {
     { key: 's', modifiers: ['cmd'], displayName: '⌘+S (保存)' },
     { key: 'p', modifiers: ['cmd'], displayName: '⌘+P (印刷)' },
     { key: 'z', modifiers: ['cmd'], displayName: '⌘+Z (元に戻す)' },
-    { key: 'shift', modifiers: ['cmd'], displayName: '⌘+Shift+Z (やり直し)' },
+    { key: 'z', modifiers: ['cmd', 'shift'], displayName: '⌘+Shift+Z (やり直し)' },
     { key: 'a', modifiers: ['cmd'], displayName: '⌘+A (全選択)' },
     { key: 'c', modifiers: ['cmd'], displayName: '⌘+C (コピー)' },
     { key: 'v', modifiers: ['cmd'], displayName: '⌘+V (貼り付け)' },
@@ -111,7 +129,21 @@ export class HotkeyConflictDetector {
     const modifiers = parts.slice(0, -1).map(m => {
       if (m === 'mod') {
         // OSに応じてModを適切な修飾子に変換
-        const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
+        const isMac = typeof navigator !== 'undefined' && (() => {
+          // 1. navigator.userAgentData?.platformを最初にチェック（最新の標準）
+          if ('userAgentData' in navigator && (navigator.userAgentData as any)?.platform) {
+            return /mac/i.test((navigator.userAgentData as any).platform);
+          }
+          
+          // 2. navigator.userAgentでApple識別子を検索
+          if (navigator.userAgent) {
+            const appleIdentifiers = /Mac|iPhone|iPad|iPod|Macintosh/i;
+            return appleIdentifiers.test(navigator.userAgent);
+          }
+          
+          // 3. 最後の手段としてnavigator.platformを使用
+          return /mac/i.test(navigator.platform);
+        })();
         return isMac ? 'cmd' : 'ctrl';
       }
       return m;
@@ -129,8 +161,8 @@ export class HotkeyConflictDetector {
     
     // キーが同じで修飾子も同じ場合は衝突
     if (parsed1.key === parsed2.key) {
-      const mods1 = new Set(parsed1.modifiers.sort());
-      const mods2 = new Set(parsed2.modifiers.sort());
+      const mods1 = new Set(parsed1.modifiers);
+      const mods2 = new Set(parsed2.modifiers);
       
       if (mods1.size === mods2.size) {
         for (const mod of mods1) {
@@ -184,30 +216,56 @@ export class HotkeyConflictDetector {
     }
     
     // 特に重要なショートカットとの衝突はエラーとして扱う
+    // 特に重要なショートカットとの衝突はエラーとして扱う
     const criticalShortcuts = ['ctrl+s', 'ctrl+c', 'ctrl+v', 'ctrl+z', 'ctrl+a'];
     if (criticalShortcuts.some(critical => this.checkConflict(hotkey, critical))) {
-      conflicts.push({
-        type: 'browser',
-        description: '重要なブラウザショートカットと衝突',
-        severity: 'error'
+      // 既存の衝突エントリの重要度を更新
+      conflicts.forEach(conflict => {
+        if (
+          conflict.type === 'browser' &&
+          criticalShortcuts.some(crit =>
+            conflict.description.toLowerCase().includes(crit)
+          )
+        ) {
+          conflict.severity = 'error';
+        }
       });
-    }
-    
+    }    
     return conflicts;
   }
 
   /**
    * HotkeyInfoをホットキー文字列に変換
+   * モディファイアの順序を標準化し、一貫性のある文字列を生成
    */
   private static formatHotkey(info: HotkeyInfo): string {
-    return [...info.modifiers, info.key].join('+');
+    // モディファイアを標準的な名前に変換し、重複を除去
+    const normalizedModifiers = [...new Set(
+      info.modifiers
+        .map(mod => this.MODIFIER_MAPPING[mod.toLowerCase()])
+        .filter(Boolean) // 無効なモディファイアを除外
+    )];
+    
+    // 標準的な順序でソート
+    const sortedModifiers = normalizedModifiers.sort((a, b) => {
+      const aIndex = this.CANONICAL_MODIFIER_ORDER.indexOf(a);
+      const bIndex = this.CANONICAL_MODIFIER_ORDER.indexOf(b);
+      return aIndex - bIndex;
+    });
+    
+    // モディファイアとキーを結合
+    return [...sortedModifiers, info.key].join('+');
   }
 
   /**
    * 衝突の説明を生成
    */
-  static generateConflictDescription(conflicts: HotkeyConflict[]): string {
+  static generateConflictDescription(conflicts: HotkeyConflict[], locale?: string): string {
     if (conflicts.length === 0) return '';
+    
+    // ロケールを取得（指定されていない場合は現在のロケールを使用）
+    const currentLocale = locale ? (locale.startsWith('ja') ? 'ja' : 'en') : getCurrentLocale();
+    const localeStrings = currentLocale === 'ja' ? ja : en;
     
     const browserConflicts = conflicts.filter(c => c.type === 'browser');
     const osConflicts = conflicts.filter(c => c.type === 'os');
@@ -216,15 +274,15 @@ export class HotkeyConflictDetector {
     let description = '';
     
     if (browserConflicts.length > 0) {
-      description += `ブラウザショートカット: ${browserConflicts.map(c => c.description).join(', ')}\n`;
+      description += `${localeStrings.browserShortcutsLabel}${browserConflicts.map(c => c.description).join(', ')}\n`;
     }
     
     if (osConflicts.length > 0) {
-      description += `OSショートカット: ${osConflicts.map(c => c.description).join(', ')}\n`;
+      description += `${localeStrings.osShortcutsLabel}${osConflicts.map(c => c.description).join(', ')}\n`;
     }
     
     if (commonConflicts.length > 0) {
-      description += `一般的なショートカット: ${commonConflicts.map(c => c.description).join(', ')}\n`;
+      description += `${localeStrings.commonShortcutsLabel}${commonConflicts.map(c => c.description).join(', ')}\n`;
     }
     
     return description.trim();

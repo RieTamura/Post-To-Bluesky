@@ -949,16 +949,24 @@ class BlueskySettingTab extends PluginSettingTab {
 	 * 重複するホットキーを見つける
 	 */
 	private findDuplicateHotkeys(hotkeys: string[]): string[] {
-		const duplicates: string[] = [];
+		const duplicatesSet = new Set<string>();
 		const seen = new Set<string>();
 
 		hotkeys.forEach(hotkey => {
-			if (seen.has(hotkey) && hotkey.trim()) {
-				duplicates.push(hotkey);
+			// ホットキーを正規化（空白を除去）
+			const normalizedHotkey = hotkey.trim();
+			
+			// 空文字列の場合はスキップ
+			if (!normalizedHotkey) return;
+			
+			// 既に見たホットキーで、まだ重複セットに追加されていない場合
+			if (seen.has(normalizedHotkey) && !duplicatesSet.has(normalizedHotkey)) {
+				duplicatesSet.add(normalizedHotkey);
 			}
-			seen.add(hotkey);
+			seen.add(normalizedHotkey);
 		});
 
-		return duplicates;
+		// Setを配列に変換して返す（各重複は1回だけ報告される）
+		return Array.from(duplicatesSet);
 	}
 }
