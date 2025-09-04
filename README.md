@@ -1,190 +1,45 @@
-# Post To Bluesky - Obsidianプラグイン
+# Post To Bluesky
 
-ObsidianからBluesky（ブルースカイ）に投稿できるプラグインです。選択したテキストやノート全体、または新規作成した投稿をBlueskyに投稿できます。
+## Language / 言語
 
-## 主な機能
-
-### 📝 投稿機能
-- **選択テキストの投稿**: エディタで選択したテキストをBlueskyに投稿
-- **ノート全体の投稿**: 現在のノートの内容をBlueskyに投稿
-- **新規投稿作成**: 空の投稿モーダルを開いて新しく投稿を作成
-
-### 🖼️ 画像添付
-- 最大4枚までの画像を添付可能
-- ドラッグ&ドロップで画像を追加
-- 画像のアスペクト比を自動調整
-
-### 😊 絵文字ピッカー
-- カテゴリ別に整理された絵文字選択
-- 感情、手、ハート、自然、食べ物、アクティビティなどの分類
-- ホットキーで素早くアクセス
-
-### ⚙️ カスタマイズ設定
-- Blueskyアカウントの設定（ハンドル、パスワード）
-- デフォルトハッシュタグの設定
-- ネットワークタイムアウトの調整
-- カスタムホットキーの設定
-
-### ⌨️ ホットキー設定
-
-**Modキーについて**
-`Mod`キーは、使用しているオペレーティングシステムに応じて自動的に適切なキーに置き換わります：
-- **macOS**: `⌘`（Commandキー）
-- **Windows/Linux**: `Ctrl`キー
-
-**デフォルトホットキー**
-| 機能 | ショートカット | macOS | Windows/Linux |
-|------|----------------|-------|---------------|
-| 投稿送信 | `Mod+Enter` | `⌘+Enter` | `Ctrl+Enter` |
-| 画像追加 | `Mod+I` | `⌘+I` | `Ctrl+I` |
-| 絵文字ピッカー | `Mod+E` | `⌘+E` | `Ctrl+E` |
-| キャンセル | `Escape` | `Escape` | `Escape` |
-
-**カスタマイズ可能**
-各ホットキーは設定画面で自由に変更できます。システムショートカットとの競合を避けるため、ホットキー衝突検出機能も搭載されています。
-
-### 🌐 多言語対応
-- 日本語と英語のローカライゼーション
-- 自動言語検出と切り替え
-
-## インストール方法
-
-### 手動インストール
-1. このリポジトリをクローンまたはダウンロード
-2. `main.js`、`styles.css`、`manifest.json`を`.obsidian/plugins/post-to-bluesky/`フォルダにコピー
-3. Obsidianを再起動
-4. 設定でプラグインを有効化
-
-### 開発環境でのセットアップ
-```bash
-# 依存関係のインストール
-npm install
-
-# 開発モードでのコンパイル
-npm run dev
-```
-
-## 使用方法
-
-### 1. 初期設定
-1. Obsidianの設定を開く
-2. 「Post To Bluesky」の設定タブを選択
-3. Blueskyのハンドルとパスワード（アプリパスワード）を入力
-4. 必要に応じてデフォルトハッシュタグを設定
-
-### 2. 投稿の作成
-- **コマンドパレット**から「Post selection to Bluesky」を実行
-- **リボンアイコン**をクリックして新規投稿を作成
-- **右クリックメニュー**から投稿オプションを選択
-
-### 3. 投稿の編集
-- テキストの入力と編集
-- 画像の追加（最大4枚）
-- 絵文字の挿入
-- ハッシュタグの追加
-
-### 4. 投稿の送信
-- `Mod+Enter`で投稿を送信
-- または投稿ボタンをクリック
-
-## 技術仕様
-
-### 対応環境
-- **Obsidian**: 0.15.0以上
-- **プラットフォーム**: デスクトップのみ（Windows、macOS、Linux）
-- **言語**: TypeScript
-
-### 主要な技術
-- **Obsidian Plugin API**: プラグインの基盤機能
-- **Bluesky API**: 投稿と認証の処理
-- **TypeScript**: 型安全性と開発効率の向上
-- **ESBuild**: 高速なTypeScriptコンパイル
-
-### アーキテクチャ
-- **モジュール化**: 機能別にファイルを分割
-- **型安全性**: インターフェースと型定義による堅牢性
-- **エラーハンドリング**: 包括的なエラー処理とユーザーフィードバック
-- **ホットキー衝突検出**: システムショートカットとの競合を防止
-
-## 設定項目
-
-### 基本設定
-- **Handle**: Blueskyのユーザーハンドル（例： `@username.bsky.social`）
-- **Password**: Blueskyのアプリパスワード
-- **Default Hashtags**: デフォルトで追加されるハッシュタグ
-- **Network Timeout**: ネットワークリクエストのタイムアウト時間（ミリ秒）
-
-### ホットキー設定
-- **Cancel**: 投稿をキャンセルするホットキー（デフォルト： `Escape`）
-- **Post**: 投稿を送信するホットキー（デフォルト： `Mod+Enter`）
-- **Add Image**: 画像を追加するホットキー（デフォルト： `Mod+I`）
-- **Emoji**: 絵文字ピッカーを開くホットキー（デフォルト： `Mod+E`）
-
-**Modキーの動作**
-- macOSでは `⌘` (Command)キーとして動作
-- Windows/Linuxでは `Ctrl`キーとして動作
-- プラットフォームに応じて自動的に適切なキーが使用される
-
-## トラブルシューティング
-
-### よくある問題
-1. **ログインできない**: アプリパスワードが正しく設定されているか確認
-2. **投稿が失敗する**: ネットワーク接続とBlueskyのサービス状況を確認
-3. **ホットキーが動作しない**: 他のアプリケーションとの競合を確認
-
-### ログの確認
-- Obsidianの開発者コンソールでエラーメッセージを確認
-- ネットワークタブでAPIリクエストの状況を確認
-
-## 開発者向け情報
-
-### プロジェクト構造
-```
-Post-To-Bluesky/
-├── main.ts                 # メインプラグインクラス
-├── hotkeyConflictDetector.ts # ホットキー衝突検出
-├── locales.ts              # 多言語対応
-├── styles.css              # スタイルシート
-├── manifest.json           # プラグイン情報
-└── package.json            # 依存関係管理
-```
-
-### ビルドとテスト
-```bash
-# 開発モード
-npm run dev
-
-# ビルド
-npm run build
-
-# リントチェック
-npm run lint
-```
-
-## ライセンス
-
-このプロジェクトは0BSD licenseの下で公開されています。
-
-## 作者
-
-**RieTamura** - [GitHub](https://github.com/RieTamura/Post-To-Bluesky)
-
-## サポート
-
-- **Issues**: [GitHub Issues](https://github.com/RieTamura/Post-To-Bluesky/issues)
-- **Sponsor**: [GitHub Sponsors](https://github.com/sponsors/RieTamura)
-
-## 更新履歴
-
-### v1.0.0
-- 初回リリース
-- 基本的な投稿機能
-- 画像添付機能
-- 絵文字ピッカー
-- 多言語対応
-- ホットキー設定
-- ホットキー衝突検出
+[🇯🇵 日本語 README](./README_JA.md) | [🇺🇸 English README](./README_EN.md)
 
 ---
 
-**注意**: このプラグインを使用するには、Blueskyアカウントとアプリパスワードが必要です。アプリパスワードはBlueskyの設定画面で生成できます。
+**Version / バージョン**: 1.0.0
+
+**Features (EN)**:
+
+- Post selected text or entire note to Bluesky
+- Attach up to 4 images
+- Emoji picker
+- Default hashtags & custom hotkeys
+- Japanese / English localization
+
+**機能概要 (JP)**:
+
+- 選択テキスト / ノート全体をBlueskyへ投稿
+- 画像最大4枚添付
+- 絵文字ピッカー
+- デフォルトハッシュタグ & カスタムホットキー
+- 日英ローカライズ対応
+
+---
+
+ObsidianからBlueskyへノート全体や選択範囲を投稿できるプラグインです。Images・Emoji対応 / Post notes or selections with optional images & emoji.
+
+詳しい使い方・設定手順は各言語のREADMEをご覧ください。
+
+---
+
+| Link | 説明 / Description |
+|------|--------------------|
+| [日本語 README](./README_JA.md) | 日本語の完全なドキュメント |
+| [English README](./README_EN.md) | Full documentation in English |
+| [Issues](https://github.com/RieTamura/Post-To-Bluesky/issues) | Bug / Feature requests |
+| [Sponsor](https://github.com/sponsors/RieTamura) | Support the author |
+
+---
+
+© 2025 RieTamura – 0BSD
+
