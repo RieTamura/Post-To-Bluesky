@@ -165,7 +165,9 @@ npm run dev
 ### Common Issues
 
 1. **Login Fails**: Verify app password
-  **Note**: You need a Bluesky account and an app password. Generate the app password from your Bluesky settings page.
+
+  - **Note**: You need a Bluesky account and an app password. Generate the app password from your Bluesky settings page.
+
 2. **Post Fails**: Check network & Bluesky status
 3. **Hotkeys Don’t Work**: Check for conflicts
 
