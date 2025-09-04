@@ -96,6 +96,14 @@ export interface LocaleStrings {
   
   // ホットキーラベル
   hotkeys: string;
+  
+  // 言語設定
+  languageSettingsTitle: string;
+  languageLabel: string;
+  languageDesc: string;
+  languageAuto: string;
+  languageEnglish: string;
+  languageJapanese: string;
 }
 
 export const ja: LocaleStrings = {
@@ -185,6 +193,14 @@ export const ja: LocaleStrings = {
   
   // ホットキーラベル
   hotkeys: 'ホットキー',
+  
+  // 言語設定
+  languageSettingsTitle: '言語設定',
+  languageLabel: 'インターフェース言語',
+  languageDesc: 'プラグインのインターフェース言語を選択してください。自動設定ではObsidianの言語設定に従います。',
+  languageAuto: '自動設定（Obsidianの言語設定に従う）',
+  languageEnglish: 'English',
+  languageJapanese: '日本語',
   
   // コマンド名
   commandPostSelection: '選択したテキストをBlueskyに投稿',
@@ -283,6 +299,14 @@ export const en: LocaleStrings = {
   
   // ホットキーラベル
   hotkeys: 'Hotkeys',
+  
+  // 言語設定
+  languageSettingsTitle: 'Language Settings',
+  languageLabel: 'Interface Language',
+  languageDesc: 'Select the interface language for the plugin. Auto setting follows Obsidian\'s language configuration.',
+  languageAuto: 'Auto (follow Obsidian language)',
+  languageEnglish: 'English',
+  languageJapanese: 'Japanese',
   
   // コマンド名
   commandPostSelection: 'Post selection to Bluesky',
