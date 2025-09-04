@@ -28,7 +28,9 @@
 
 ---
 
-ObsidianからBlueskyへノート全体や選択範囲を投稿できるプラグインです。Images・Emoji対応
+ObsidianからBlueskyへノート全体や選択範囲を投稿できるプラグインです。
+Images・Emoji対応
+
 Post notes or selections with optional images & emoji.
 
 詳しい使い方・設定手順は各言語のREADMEをご覧ください。
