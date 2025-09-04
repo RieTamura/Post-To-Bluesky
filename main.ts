@@ -88,7 +88,8 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 
 // Bluesky API embed 関連型
 interface BlueskyBlobRef {
-	$type: 'blob';
+	// 修正: BlueskyBlobRef の型識別子フィールド名を $type から _type に変更
+	_type: 'blob';
 	ref: { $link: string };
 	mimeType: string;
 	size: number;
@@ -615,15 +616,17 @@ class PostModal extends Modal {
 		// よく使う表情 / ジェスチャー / 記号 / 物 / 自然 をまとめて拡張
 		const emojis = [
 			// Smileys & Emotion
-			'😀','😁','😂','🤣','😅','😊','🙂','😉','😍','😘','😋','😎','�','�🤔','😐','😑','😶','🙄','😮','😴','🤤','😭','😡','🤯','🥳','🤩','😇','😷','🤒','🤕','🤢','🤮',
+			'😀','�','😄','�😁','�','�😂','🤣','😅','😊','🙂','�','�😉','�','�😍','🥰','😘','�','😙','😚','�😋','�','😜','�','😝','😎','🤓','�🤔','🤨','😐','😑','😶','🙄','😮','�','😲','🥱','�😴','🤤','😭','�','😤','�😡','🤯','😳','�','🥶','�🥳','🤩','😇','😷','🤒','🤕','🤢','🤮','🤧',
 			// Gestures & People
-			'👍','�','👌','✌️','🤞','🤟','🤘','🤙','👏','🙌','�🙏','👐','✋','🤚','👋','💪','🫶','😺','😸','😹',
+			'👍','👎','👌','✌️','🤞','🤟','🤘','🤙','👏','🙌','','👐','✋','🤚','👋','🤏','💪','🫶','🫰',
+			// Cat Faces
+			'😺','😸','😹','😻','😼','😽','🙀','😿','😾',
 			// Symbols / Hearts / Stars
-			'❤️','💛','💚','💙','💜','🖤','🤍','🤎','�','❣️','💕','💞','💓','💗','💖','💘','💝','💤','💢','✨','⚡','🔥','�','⭐','💫','�🎉','🎊','🎈',
+			'❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','❣️','💕','💞','💓','💗','💖','💘','💝','💤','💢','✨','⚡','🔥','⭐','🌟','💫','','🎊','🎈',
 			// Objects / Activities
-			'📝','🖊️','📎','📌','📚','💡','🖥️','📱','⌚','🕹️','🎮','🎵','🎶','🎧','🎤','🎬','📷','🗓️','⏰','📦',
+			'📝','🖊️','📎','📌','📚','💡','🖥️','�','�📱','⌚','🕹️','🎮','🎵','🎶','🎧','🎤','🎬','📷','🗓️','⏰','📦',
 			// Nature / Food
-			'🌞','🌙','⭐','☁️','🌧️','🌈','❄️','🌸','🌻','🍀','🍎','🍊','🍋','🍇','🍓','🥝','🥑','🍙','🍣','🍜','☕','🍺','🍻','🥂'
+			'🌞','�','🌙','☁️','🌧️','🌈','❄️','🌸','🌻','🍀','🍎','🍊','🍋','🍇','🍓','🥝','🥑','🍙','🍣','🍜','☕','🍺','🍻','🥂'
 		];
 		const grid = this.emojiPickerContainer.createDiv({ cls: 'bluesky-emoji-grid' });
 		emojis.forEach(em => {
@@ -643,10 +646,9 @@ class PostModal extends Modal {
 		contentEl.empty();
 		contentEl.addClass('bluesky-modal-container');
 
-	// キーボードイベントハンドラーを生成
-	this.keyHandler = (e: KeyboardEvent): void => this.handleKeyboard(e);
-
-	// キーボードイベントリスナーを追加
+		// キーボードイベントハンドラーを生成
+		this.keyHandler = (e: KeyboardEvent): void => this.handleKeyboard(e);
+		// キーボードイベントリスナーを追加
 		document.addEventListener('keydown', this.keyHandler);
 
 		const headerEl = contentEl.createDiv({ cls: 'bluesky-modal-header' });
@@ -724,14 +726,10 @@ class PostModal extends Modal {
 		`;
 
 		this.createEmojiPicker();
-
-		this.textArea.addEventListener('input', () => {
-			this.updateCharCount();
-		});
-
-				this.updateCharCount();
-		// 初期表示では絵文字ピッカーは閉じたままにする
-		}
+		this.textArea.addEventListener('input', () => { this.updateCharCount(); });
+		this.updateCharCount();
+		// 初期表示では絵文字ピッカーは閉じたまま
+	}
 
 	showEmojiPicker(): void {
 		if (this.emojiPickerContainer) {
@@ -1033,7 +1031,8 @@ class PostModal extends Modal {
 					const mimeType = (ctEntry?.[1] as string) || 'image/jpeg';
 					const uploadedImage = await this.plugin.uploadBlob(blob, mimeType);
 					thumb = {
-						$type: 'blob' as const,
+						// フィールド名を $type から _type に統一
+						_type: 'blob' as const,
 						ref: uploadedImage.blob.ref,
 						mimeType: uploadedImage.blob.mimeType,
 						size: uploadedImage.blob.size
