@@ -1,5 +1,15 @@
 import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, MarkdownView } from 'obsidian';
 
+// 統一された絵文字リスト（複数箇所の重複定義を解消）
+const EMOJI_LIST: string[] = [
+	'😀','😄','😁','😂','🤣','😅','😊','🙂','😉','😍','🥰','😘','😙','😚','😋','😜','😝','😎','🤓','🤔','🤨','😐','😑','😶','🙄','😮','😲','🥱','😴','🤤','😭','😤','😡','🤯','😳','🥶','🥳','🤩','😇','😷','🤒','🤕','🤢','🤮','🤧',
+	'👍','👎','👌','✌️','🤞','🤟','🤘','🤙','👏','🙌','👐','✋','🤚','👋','🤏','💪','🫶','🫰',
+	'😺','😸','😹','😻','😼','😽','🙀','😿','😾',
+	'❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','❣️','💕','💞','💓','💗','💖','💘','💝','💤','💢','✨','⚡','🔥','⭐','🌟','💫','🎊','🎈',
+	'📝','🖊️','📎','📌','📚','💡','🖥️','📱','⌚','🕹️','🎮','🎵','🎶','🎧','🎤','🎬','📷','🗓️','⏰','📦',
+	'🌞','🌙','☁️','🌧️','🌈','❄️','🌸','🌻','🍀','🍎','🍊','🍋','🍇','🍓','🥝','🥑','🍙','🍣','🍜','☕','🍺','🍻','🥂'
+];
+
 // Locale表示文字列型
 type LocaleStrings = {
 	post: string;
@@ -615,23 +625,8 @@ class PostModal extends Modal {
 	private createEmojiPicker(): void {
 		if (!this.emojiPickerContainer) return;
 		this.emojiPickerContainer.empty();
-		// よく使う表情 / ジェスチャー / 記号 / 物 / 自然 をまとめて拡張
-		const emojis = [
-			// Smileys & Emotion
-			'😀','�','😄','�😁','�','�😂','🤣','😅','😊','🙂','�','�😉','�','�😍','🥰','😘','�','😙','😚','�😋','�','😜','�','😝','😎','🤓','�🤔','🤨','😐','😑','😶','🙄','😮','�','😲','🥱','�😴','🤤','😭','�','😤','�😡','🤯','😳','�','🥶','�🥳','🤩','😇','😷','🤒','🤕','🤢','🤮','🤧',
-			// Gestures & People
-			'👍','👎','👌','✌️','🤞','🤟','🤘','🤙','👏','🙌','','👐','✋','🤚','👋','🤏','💪','🫶','🫰',
-			// Cat Faces
-			'😺','😸','😹','😻','😼','😽','🙀','😿','😾',
-			// Symbols / Hearts / Stars
-			'❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','❣️','💕','💞','💓','💗','💖','💘','💝','💤','💢','✨','⚡','🔥','⭐','🌟','💫','','🎊','🎈',
-			// Objects / Activities
-			'📝','🖊️','📎','📌','📚','💡','🖥️','�','�📱','⌚','🕹️','🎮','🎵','🎶','🎧','🎤','🎬','📷','🗓️','⏰','📦',
-			// Nature / Food
-			'🌞','�','🌙','☁️','🌧️','🌈','❄️','🌸','🌻','🍀','🍎','🍊','🍋','🍇','🍓','🥝','🥑','🍙','🍣','🍜','☕','🍺','🍻','🥂'
-		];
 		const grid = this.emojiPickerContainer.createDiv({ cls: 'bluesky-emoji-grid' });
-		emojis.forEach(em => {
+		EMOJI_LIST.forEach(em => {
 			const span = grid.createSpan({ text: em, cls: 'bluesky-emoji-item' });
 			span.addEventListener('click', () => this.insertEmoji(em));
 		});
@@ -643,7 +638,7 @@ class PostModal extends Modal {
 		else this.showEmojiPicker();
 	}
 
-	// モーダル外（body直下）にピッカーを生成
+	// モーダル外（body直下）にピッカーを生成（EMOJI_LIST を利用）
 	private initExternalEmojiPicker(): void {
 		if (!this.emojiPickerContainer) {
 			this.emojiPickerContainer = document.createElement('div');
@@ -652,17 +647,9 @@ class PostModal extends Modal {
 			document.body.appendChild(this.emojiPickerContainer);
 		}
 		this.emojiPickerContainer.innerHTML = '';
-		const emojis = [
-			'😀','😄','😁','😂','🤣','😅','😊','🙂','😉','😍','🥰','😘','😙','😚','😋','😜','😝','😎','🤓','🤔','🤨','😐','😑','😶','🙄','😮','😲','🥱','😴','🤤','😭','😤','😡','🤯','😳','🥶','🥳','🤩','😇','😷','🤒','🤕','🤢','🤮','🤧',
-			'👍','👎','👌','✌️','🤞','🤟','🤘','🤙','👏','🙌','👐','✋','🤚','👋','🤏','💪','🫶','🫰',
-			'😺','😸','😹','😻','😼','😽','🙀','😿','😾',
-			'❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','❣️','💕','💞','💓','💗','💖','💘','💝','💤','💢','✨','⚡','🔥','⭐','🌟','💫','🎊','🎈',
-			'📝','🖊️','📎','📌','📚','💡','🖥️','📱','⌚','🕹️','🎮','🎵','🎶','🎧','🎤','🎬','📷','🗓️','⏰','📦',
-			'🌞','🌙','☁️','🌧️','🌈','❄️','🌸','🌻','🍀','🍎','🍊','🍋','🍇','🍓','🥝','🥑','🍙','🍣','🍜','☕','🍺','🍻','🥂'
-		];
 		const grid = document.createElement('div');
 		grid.className = 'bluesky-emoji-grid';
-		emojis.forEach(em => {
+		EMOJI_LIST.forEach(em => {
 			const span = document.createElement('span');
 			span.textContent = em;
 			span.className = 'bluesky-emoji-item';
@@ -821,9 +808,16 @@ class PostModal extends Modal {
 		this.updateCharCount();
 		this.debounceUpdatePreviews();
 
-		// 絵文字ピッカーを閉じる
+		// 絵文字ピッカーを閉じて DOM を除去（失敗時はログ）
 		this.hideEmojiPicker();
-		try { this.emojiPickerContainer?.remove(); } catch {}
+		try {
+			if (this.emojiPickerContainer && this.emojiPickerContainer.parentElement) {
+				this.emojiPickerContainer.remove();
+				this.emojiPickerContainer = null as any; // 後続誤参照防止
+			}
+		} catch (err) {
+			console.error('[Post-To-Bluesky] Failed to remove emoji picker container:', err);
+		}
 	}
 
 	// キーボードイベントハンドラー

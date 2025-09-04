@@ -135,11 +135,11 @@
   border-top: 1px solid var(--background-modifier-border);
 }
 
-/* 修正：フッター内の配置を調整 */
+/* Layout adjustment inside footer */
 .bluesky-actions {
   display: flex;
   align-items: center;
-  gap: 8px; /* ボタン間のスペースを追加 */
+  gap: 8px; /* space between buttons */
 }
 
 .bluesky-footer-row {
@@ -149,7 +149,7 @@
   width: 100%;
 }
 
-/* 修正：文字カウンターを右端に配置 */
+/* Place character counter at right end */
 .bluesky-char-count {
   font-size: 12px;
   color: var(--text-muted);
@@ -162,7 +162,7 @@
   font-weight: bold;
 }
 
-/* ホットキーヘルプのスタイル */
+/* Hotkey help styles */
 .bluesky-hotkey-help {
   padding: 8px 12px;
   background: var(--background-secondary);
@@ -182,22 +182,22 @@
   font-weight: 600;
 }
 
-/* 絵文字ピッカーのスタイル */
-/* アクション全体ではなく絵文字ボタン用ラッパを基準にする（.bluesky-actions には position を付けない） */
+/* Emoji picker styles */
+/* Base relative positioning only on the emoji button wrapper (no position on .bluesky-actions) */
 .bluesky-emoji-wrapper { position: relative; display: flex; align-items: center; }
 
-/* 旧: wrapper内absolute -> 新: body直下固定(fixed) */
+/* Changed: from absolute inside wrapper to body-level fixed positioning */
 .bluesky-emoji-picker-container {
   position: fixed;
-  top: 0; /* JSで再配置 */
-  left: 0; /* JSで再配置 */
+  top: 0; /* repositioned by JS */
+  left: 0; /* repositioned by JS */
   width: 300px;
   max-height: 260px;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   box-shadow: var(--shadow-l);
-  z-index: 9999; /* モーダルより上 */
+  z-index: 9999; /* above modal */
   overflow: auto;
   padding: 6px 8px;
 }
@@ -296,7 +296,7 @@
   transform: scale(1.1);
 }
 
-/* ホットキー衝突警告のスタイル */
+/* Hotkey conflict warning styles */
 .hotkey-conflict-warning {
 	margin: 10px 0;
 	padding: 10px;
