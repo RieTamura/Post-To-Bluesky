@@ -86,9 +86,8 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	language: 'en'
 };
 
-// Bluesky API embed 関連型
+// Bluesky API embed 関連型（復元）
 interface BlueskyBlobRef {
-	// 修正: BlueskyBlobRef の型識別子フィールド名を $type から _type に変更
 	_type: 'blob';
 	ref: { $link: string };
 	mimeType: string;

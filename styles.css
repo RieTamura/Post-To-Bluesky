@@ -183,19 +183,22 @@
 }
 
 /* 絵文字ピッカーのスタイル */
+.bluesky-actions { position: relative; }
+
 .bluesky-emoji-picker-container {
   position: absolute;
-  bottom: 100px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 320px;
-  max-height: 300px;
+  top: 100%; /* actions 行の直下 */
+  left: 0;
+  width: 300px;
+  max-height: 260px;
+  margin-top: 6px;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   box-shadow: var(--shadow-l);
   z-index: 1000;
-  overflow: hidden;
+  overflow: auto;
+  padding: 6px 8px;
 }
 
 .bluesky-emoji-header {
