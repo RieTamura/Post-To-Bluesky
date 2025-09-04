@@ -1,5 +1,6 @@
 // hotkeyConflictDetector.ts - ホットキー衝突検出機能
-import { getCurrentLocale, ja, en, type LocaleStrings } from './locales';
+import { getCurrentLocale, ja, en } from './locales';
+import type { LocaleStrings } from './locales';
 
 export interface HotkeyConflict {
   type: 'browser' | 'os' | 'common';
