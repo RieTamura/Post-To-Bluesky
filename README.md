@@ -15,6 +15,7 @@
 - Emoji picker
 - Default hashtags & custom hotkeys
 - Japanese / English localization
+- Hotkey collision detection
 
 **機能概要 (JP)**:
 
@@ -23,10 +24,12 @@
 - 絵文字ピッカー
 - デフォルトハッシュタグ & カスタムホットキー
 - 日英ローカライズ対応
+- ホットキー衝突検出
 
 ---
 
-ObsidianからBlueskyへノート全体や選択範囲を投稿できるプラグインです。Images・Emoji対応 / Post notes or selections with optional images & emoji.
+ObsidianからBlueskyへノート全体や選択範囲を投稿できるプラグインです。Images・Emoji対応
+Post notes or selections with optional images & emoji.
 
 詳しい使い方・設定手順は各言語のREADMEをご覧ください。
 
@@ -37,9 +40,10 @@ ObsidianからBlueskyへノート全体や選択範囲を投稿できるプラ�
 | [日本語 README](./README_JA.md) | 日本語の完全なドキュメント |
 | [English README](./README_EN.md) | Full documentation in English |
 | [Issues](https://github.com/RieTamura/Post-To-Bluesky/issues) | Bug / Feature requests |
+| [Releases](https://github.com/RieTamura/Post-To-Bluesky/releases) | 最新リリース / Latest releases |
 | [Sponsor](https://github.com/sponsors/RieTamura) | Support the author |
 
 ---
 
-© 2025 RieTamura – 0BSD
+© 2025 RieTamura – [0BSD License](./LICENSE)
 
