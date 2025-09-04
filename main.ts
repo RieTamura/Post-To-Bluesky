@@ -594,6 +594,7 @@ class PostModal extends Modal {
 	linkPreviewContainer!: HTMLElement;
 	imagePreviewContainer!: HTMLElement;
 	emojiPickerContainer!: HTMLElement;
+	emojiButtonEl!: HTMLElement; // 絵文字ボタン参照
 	charCountEl!: HTMLElement;
 	fileInput!: HTMLInputElement;
 	selectedImages: File[] = [];
@@ -601,6 +602,8 @@ class PostModal extends Modal {
 	pendingLinkPreviewUrl: string | null = null;
 	debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	isEmojiPickerVisible: boolean = false;
+	outsideClickHandler?: (e: MouseEvent) => void;
+	private repositionEmojiPickerBound?: () => void;
 	private keyHandler: (e: KeyboardEvent) => void;
 
 	constructor(app: App, plugin: BlueskyPlugin, initialText: string = '') {
@@ -638,6 +641,51 @@ class PostModal extends Modal {
 	private toggleEmojiPicker(): void {
 		if (this.isEmojiPickerVisible) this.hideEmojiPicker();
 		else this.showEmojiPicker();
+	}
+
+	// モーダル外（body直下）にピッカーを生成
+	private initExternalEmojiPicker(): void {
+		if (!this.emojiPickerContainer) {
+			this.emojiPickerContainer = document.createElement('div');
+			this.emojiPickerContainer.className = 'bluesky-emoji-picker-container bluesky-emoji-floating';
+			this.emojiPickerContainer.style.display = 'none';
+			document.body.appendChild(this.emojiPickerContainer);
+		}
+		this.emojiPickerContainer.innerHTML = '';
+		const emojis = [
+			'😀','😄','😁','😂','🤣','😅','😊','🙂','😉','😍','🥰','😘','😙','😚','😋','😜','😝','😎','🤓','🤔','🤨','😐','😑','😶','🙄','😮','😲','🥱','😴','🤤','😭','😤','😡','🤯','😳','🥶','🥳','🤩','😇','😷','🤒','🤕','🤢','🤮','🤧',
+			'👍','👎','👌','✌️','🤞','🤟','🤘','🤙','👏','🙌','👐','✋','🤚','👋','🤏','💪','🫶','🫰',
+			'😺','😸','😹','😻','😼','😽','🙀','😿','😾',
+			'❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','❣️','💕','💞','💓','💗','💖','💘','💝','💤','💢','✨','⚡','🔥','⭐','🌟','💫','🎊','🎈',
+			'📝','🖊️','📎','📌','📚','💡','🖥️','📱','⌚','🕹️','🎮','🎵','🎶','🎧','🎤','🎬','📷','🗓️','⏰','📦',
+			'🌞','🌙','☁️','🌧️','🌈','❄️','🌸','🌻','🍀','🍎','🍊','🍋','🍇','🍓','🥝','🥑','🍙','🍣','🍜','☕','🍺','🍻','🥂'
+		];
+		const grid = document.createElement('div');
+		grid.className = 'bluesky-emoji-grid';
+		emojis.forEach(em => {
+			const span = document.createElement('span');
+			span.textContent = em;
+			span.className = 'bluesky-emoji-item';
+			span.addEventListener('click', () => this.insertEmoji(em));
+			grid.appendChild(span);
+		});
+		this.emojiPickerContainer.appendChild(grid);
+	}
+
+	private repositionEmojiPicker() {
+		if (!this.emojiPickerContainer || !this.emojiButtonEl || this.emojiPickerContainer.style.display === 'none') return;
+		const rect = this.emojiButtonEl.getBoundingClientRect();
+		const picker = this.emojiPickerContainer;
+		const width = picker.offsetWidth || 300;
+		const height = picker.offsetHeight || 260;
+		let top = rect.bottom + 4;
+		let left = rect.left;
+		if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
+		if (top + height > window.innerHeight - 8) top = rect.top - height - 4;
+		if (top < 8) top = 8;
+		if (left < 8) left = 8;
+		picker.style.top = `${top}px`;
+		picker.style.left = `${left}px`;
 	}
 
 	onOpen() {
@@ -685,7 +733,7 @@ class PostModal extends Modal {
 
 		this.linkPreviewContainer = contentEl.createDiv({ cls: 'bluesky-preview-container' });
 		this.imagePreviewContainer = contentEl.createDiv({ cls: 'bluesky-image-preview-container' });
-		this.emojiPickerContainer = contentEl.createDiv({ cls: 'bluesky-emoji-picker-container' });
+		// 絵文字ピッカーはボタンの右隣に出すため、後で actions 内ラッパに配置する
 
 		const footerEl = contentEl.createDiv({ cls: 'bluesky-modal-footer' });
 
@@ -703,11 +751,13 @@ class PostModal extends Modal {
 			.setTooltip(`${this.plugin.getLocale().addImage} (最大4枚) - ${this.plugin.settings.hotkeys.addImage}`)
 			.onClick(() => this.fileInput.click());
 
-		// 絵文字ボタン
-		new ButtonComponent(actionsEl)
+		// 絵文字ボタンのみ（ピッカー本体は body 直下に生成）
+		const emojiWrapper = actionsEl.createDiv({ cls: 'bluesky-emoji-wrapper' });
+		const emojiBtn = new ButtonComponent(emojiWrapper)
 			.setIcon('smile')
 			.setTooltip(`${this.plugin.getLocale().addEmoji} - ${this.plugin.settings.hotkeys.emoji}`)
 			.onClick(() => this.toggleEmojiPicker());
+		this.emojiButtonEl = emojiBtn.buttonEl;
 
 		// 文字カウンターを右端に配置
 		this.charCountEl = footerRowEl.createDiv({ cls: 'bluesky-char-count' });
@@ -724,24 +774,38 @@ class PostModal extends Modal {
 			</small>
 		`;
 
-		this.createEmojiPicker();
+		this.initExternalEmojiPicker();
 		this.textArea.addEventListener('input', () => { this.updateCharCount(); });
 		this.updateCharCount();
 		// 初期表示では絵文字ピッカーは閉じたまま
 	}
 
 	showEmojiPicker(): void {
-		if (this.emojiPickerContainer) {
-			this.emojiPickerContainer.style.display = 'block';
-		}
+		if (!this.emojiPickerContainer) this.initExternalEmojiPicker();
+		this.emojiPickerContainer.style.display = 'block';
 		this.isEmojiPickerVisible = true;
+		this.repositionEmojiPicker();
+		this.outsideClickHandler = (e: MouseEvent) => {
+			if (!this.emojiPickerContainer) return;
+			if (!this.emojiPickerContainer.contains(e.target as Node) && !this.emojiButtonEl.contains(e.target as Node)) {
+				this.hideEmojiPicker();
+			}
+		};
+		document.addEventListener('mousedown', this.outsideClickHandler);
+		this.repositionEmojiPickerBound = () => this.repositionEmojiPicker();
+		window.addEventListener('resize', this.repositionEmojiPickerBound);
+		window.addEventListener('scroll', this.repositionEmojiPickerBound, true);
 	}
 
 	hideEmojiPicker(): void {
-		if (this.emojiPickerContainer) {
-			this.emojiPickerContainer.style.display = 'none';
-		}
+		if (!this.emojiPickerContainer) return;
+		this.emojiPickerContainer.style.display = 'none';
 		this.isEmojiPickerVisible = false;
+		if (this.outsideClickHandler) document.removeEventListener('mousedown', this.outsideClickHandler);
+		if (this.repositionEmojiPickerBound) {
+			window.removeEventListener('resize', this.repositionEmojiPickerBound);
+			window.removeEventListener('scroll', this.repositionEmojiPickerBound, true);
+		}
 	}
 
 	insertEmoji(emoji: string): void {
@@ -759,6 +823,7 @@ class PostModal extends Modal {
 
 		// 絵文字ピッカーを閉じる
 		this.hideEmojiPicker();
+		try { this.emojiPickerContainer?.remove(); } catch {}
 	}
 
 	// キーボードイベントハンドラー

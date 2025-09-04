@@ -183,20 +183,21 @@
 }
 
 /* 絵文字ピッカーのスタイル */
-.bluesky-actions { position: relative; }
+/* アクション全体ではなく絵文字ボタン用ラッパを基準にする（.bluesky-actions には position を付けない） */
+.bluesky-emoji-wrapper { position: relative; display: flex; align-items: center; }
 
+/* 旧: wrapper内absolute -> 新: body直下固定(fixed) */
 .bluesky-emoji-picker-container {
-  position: absolute;
-  top: 100%; /* actions 行の直下 */
-  left: 0;
+  position: fixed;
+  top: 0; /* JSで再配置 */
+  left: 0; /* JSで再配置 */
   width: 300px;
   max-height: 260px;
-  margin-top: 6px;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   box-shadow: var(--shadow-l);
-  z-index: 1000;
+  z-index: 9999; /* モーダルより上 */
   overflow: auto;
   padding: 6px 8px;
 }
