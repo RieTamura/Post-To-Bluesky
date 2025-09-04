@@ -81,9 +81,21 @@ export interface LocaleStrings {
   timeoutPlaceholder: string;
   hashtagsPlaceholder: string;
   
+  // コマンド名
+  commandPostSelection: string;
+  commandPostNote: string;
+  commandCreatePost: string;
+  commandToggleEmojiPicker: string;
+  
+  // リボンアイコン
+  ribbonIconTooltip: string;
+  
   // ホットキー記法
   hotkeyFormat: string;
   hotkeyExamples: string;
+  
+  // ホットキーラベル
+  hotkeys: string;
 }
 
 export const ja: LocaleStrings = {
@@ -169,7 +181,19 @@ export const ja: LocaleStrings = {
   
   // ホットキー記法
   hotkeyFormat: 'ホットキー記法',
-  hotkeyExamples: '例: Mod+Enter, Ctrl+Shift+S, Alt+A'
+  hotkeyExamples: '例: Mod+Enter, Ctrl+Shift+S, Alt+A',
+  
+  // ホットキーラベル
+  hotkeys: 'ホットキー',
+  
+  // コマンド名
+  commandPostSelection: '選択したテキストをBlueskyに投稿',
+  commandPostNote: '現在のノートをBlueskyに投稿',
+  commandCreatePost: '新しいBluesky投稿を作成',
+  commandToggleEmojiPicker: 'Bluesky絵文字ピッカーを切り替え',
+  
+  // リボンアイコン
+  ribbonIconTooltip: 'Blueskyに投稿'
 };
 
 export const en: LocaleStrings = {
@@ -255,7 +279,19 @@ export const en: LocaleStrings = {
   
   // ホットキー記法
   hotkeyFormat: 'Hotkey Format',
-  hotkeyExamples: 'Examples: Mod+Enter, Ctrl+Shift+S, Alt+A'
+  hotkeyExamples: 'Examples: Mod+Enter, Ctrl+Shift+S, Alt+A',
+  
+  // ホットキーラベル
+  hotkeys: 'Hotkeys',
+  
+  // コマンド名
+  commandPostSelection: 'Post selection to Bluesky',
+  commandPostNote: 'Post current note to Bluesky',
+  commandCreatePost: 'Create new Bluesky post',
+  commandToggleEmojiPicker: 'Toggle Bluesky emoji picker',
+  
+  // リボンアイコン
+  ribbonIconTooltip: 'Post to Bluesky'
 };
 
 // 現在の言語を取得する関数
@@ -273,6 +309,14 @@ export function getCurrentLocale(): LocaleStrings {
   }
   
   // それ以外は英語版を返す
+  return en;
+}
+
+// Obsidianの言語設定に基づいてロケールを取得する関数
+export function getLocaleByObsidianLanguage(obsidianLanguage?: string): LocaleStrings {
+  if (obsidianLanguage && obsidianLanguage.startsWith('ja')) {
+    return ja;
+  }
   return en;
 }
 

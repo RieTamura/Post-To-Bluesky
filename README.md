@@ -29,7 +29,7 @@ ObsidianからBluesky（ブルースカイ）に投稿できるプラグイン�
 
 **Modキーについて**
 `Mod`キーは、使用しているオペレーティングシステムに応じて自動的に適切なキーに置き換わります：
-- **macOS**: `⌘` (Commandキー)
+- **macOS**: `⌘`（Commandキー）
 - **Windows/Linux**: `Ctrl`キー
 
 **デフォルトホットキー**
@@ -109,16 +109,16 @@ npm run dev
 ## 設定項目
 
 ### 基本設定
-- **Handle**: Blueskyのユーザーハンドル（例: `@username.bsky.social`）
+- **Handle**: Blueskyのユーザーハンドル（例： `@username.bsky.social`）
 - **Password**: Blueskyのアプリパスワード
 - **Default Hashtags**: デフォルトで追加されるハッシュタグ
 - **Network Timeout**: ネットワークリクエストのタイムアウト時間（ミリ秒）
 
 ### ホットキー設定
-- **Cancel**: 投稿をキャンセルするホットキー（デフォルト: `Escape`）
-- **Post**: 投稿を送信するホットキー（デフォルト: `Mod+Enter`）
-- **Add Image**: 画像を追加するホットキー（デフォルト: `Mod+I`）
-- **Emoji**: 絵文字ピッカーを開くホットキー（デフォルト: `Mod+E`）
+- **Cancel**: 投稿をキャンセルするホットキー（デフォルト： `Escape`）
+- **Post**: 投稿を送信するホットキー（デフォルト： `Mod+Enter`）
+- **Add Image**: 画像を追加するホットキー（デフォルト： `Mod+I`）
+- **Emoji**: 絵文字ピッカーを開くホットキー（デフォルト： `Mod+E`）
 
 **Modキーの動作**
 - macOSでは `⌘` (Command)キーとして動作

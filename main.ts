@@ -1,9 +1,27 @@
 // main.ts
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ButtonComponent, requestUrl, setIcon } from 'obsidian';
-import { locale } from './locales';
+import { locale, getLocaleByObsidianLanguage, LocaleStrings } from './locales';
 import { HotkeyConflictDetector, HotkeyConflict } from './hotkeyConflictDetector';
 
 // ... (interfaceや定数定義は変更なし) ...
+// ObsidianのAppインターフェースを拡張して、settingsプロパティを含むインターフェースを定義
+// より厳密な型定義で型安全性を向上
+interface ObsidianAppWithSettings extends App {
+	settings: {
+		language: string;
+	};
+}
+
+// 型ガード関数：ObsidianAppWithSettingsの型チェック
+function isObsidianAppWithSettings(app: App): app is ObsidianAppWithSettings {
+	return Boolean(app && 
+		   'settings' in app && 
+		   app.settings && 
+		   typeof app.settings === 'object' &&
+		   'language' in app.settings &&
+		   typeof app.settings.language === 'string');
+}
+
 interface BlueskyPluginSettings {
 	handle: string;
 	password: string;
@@ -16,6 +34,8 @@ interface BlueskyPluginSettings {
 		addImage: string;
 		emoji: string;
 	}
+	// 言語設定を追加
+	language?: string;
 }
 
 const DEFAULT_SETTINGS: BlueskyPluginSettings = {
@@ -64,17 +84,28 @@ export default class BlueskyPlugin extends Plugin {
 	refreshJwt: string = '';
 	userAvatar: string = '';
 	did: string = '';
+	private currentLocale: LocaleStrings | undefined;
 
 	async onload() {
 		await this.loadSettings();
-		this.addCommand({ id: 'post-selection-to-bluesky', name: 'Post selection to Bluesky', editorCallback: (editor: Editor, view: MarkdownView) => { const selection = editor.getSelection(); if (selection?.trim()) new PostModal(this.app, this, selection).open(); else new Notice(locale.pleaseSelectText); } });
-		this.addCommand({ id: 'post-note-to-bluesky', name: 'Post current note to Bluesky', editorCallback: (editor: Editor, view: MarkdownView) => { const content = editor.getValue(); if (content?.trim()) new PostModal(this.app, this, content).open(); else new Notice(locale.noteIsEmpty); } });
-		this.addCommand({ id: 'create-new-post', name: 'Create new Bluesky post', callback: () => new PostModal(this.app, this, '').open() });
+		// Obsidianの言語設定を取得してローカライゼーションを適用
+		this.updateLanguageSettings();
+		
+		// Obsidianの設定変更を監視してローカライゼーションを更新
+		this.registerEvent(
+			this.app.workspace.on('layout-change', () => {
+				// レイアウト変更時に言語設定を再確認（設定変更の可能性がある場合）
+				this.updateLanguageSettings();
+			})
+		);
+		this.addCommand({ id: 'post-selection-to-bluesky', name: this.getLocale().commandPostSelection, editorCallback: (editor: Editor, view: MarkdownView) => { const selection = editor.getSelection(); if (selection?.trim()) new PostModal(this.app, this, selection).open(); else new Notice(this.getLocale().pleaseSelectText); } });
+		this.addCommand({ id: 'post-note-to-bluesky', name: this.getLocale().commandPostNote, editorCallback: (editor: Editor, view: MarkdownView) => { const content = editor.getValue(); if (content?.trim()) new PostModal(this.app, this, content).open(); else new Notice(this.getLocale().noteIsEmpty); } });
+		this.addCommand({ id: 'create-new-post', name: this.getLocale().commandCreatePost, callback: () => new PostModal(this.app, this, '').open() });
 
 		// 新しいコマンドを追加
 		this.addCommand({
 			id: 'toggle-bluesky-emoji-picker',
-			name: 'Toggle Bluesky emoji picker',
+			name: this.getLocale().commandToggleEmojiPicker,
 			checkCallback: (checking: boolean) => {
 				// activeModalプロパティは公式APIではないため 'any' にキャスト
 				const modal = (this.app.workspace as any).activeModal;
@@ -91,7 +122,7 @@ export default class BlueskyPlugin extends Plugin {
 			}
 		});
 
-		this.addRibbonIcon('send', 'Post to Bluesky', () => new PostModal(this.app, this, '').open());
+		this.addRibbonIcon('send', this.getLocale().ribbonIconTooltip, () => new PostModal(this.app, this, '').open());
 		this.addSettingTab(new BlueskySettingTab(this.app, this));
 	}
 
@@ -99,13 +130,43 @@ export default class BlueskyPlugin extends Plugin {
 	async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
 	async saveSettings() { await this.saveData(this.settings); }
 
+	// 言語設定を更新するメソッド
+	public updateLanguageSettings() {
+		try {
+			// 型ガードを使用して安全にObsidianの言語設定を取得
+			if (isObsidianAppWithSettings(this.app)) {
+				const obsidianLanguage = this.app.settings.language;
+				if (obsidianLanguage && obsidianLanguage !== this.settings.language) {
+					this.settings.language = obsidianLanguage;
+					this.currentLocale = getLocaleByObsidianLanguage(obsidianLanguage);
+					this.saveSettings();
+				} else {
+					// 設定がない場合はデフォルトのロケールを使用
+					this.currentLocale = locale;
+				}
+			} else {
+				// ObsidianAppWithSettingsの型に適合しない場合はデフォルトのロケールを使用
+				console.warn('Obsidianの設定に言語情報が含まれていません。デフォルトのロケールを使用します。');
+				this.currentLocale = locale;
+			}
+		} catch (e) {
+			console.error('言語設定の更新に失敗しました:', e);
+			this.currentLocale = locale;
+		}
+	}
+
+	// 現在のロケールを取得するメソッド
+	getLocale(): LocaleStrings {
+		return this.currentLocale || locale;
+	}
+
 	async login(): Promise<boolean> {
-		if (!this.settings.handle || !this.settings.password) { new Notice(locale.loginRequired); return false; }
+		if (!this.settings.handle || !this.settings.password) { new Notice(this.getLocale().loginRequired); return false; }
 		try {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
 			const resp = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password }), signal: controller.signal });
-			if (!resp.ok) throw new Error(`${locale.loginFailed}: ${resp.status}`);
+			if (!resp.ok) throw new Error(`${this.getLocale().loginFailed}: ${resp.status}`);
 			const data = await resp.json();
 			this.accessJwt = data.accessJwt; this.refreshJwt = data.refreshJwt; this.did = data.did;
 			try {
@@ -114,10 +175,10 @@ export default class BlueskyPlugin extends Plugin {
 				const profileResp = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${data.did}`, { headers: { 'Authorization': `Bearer ${this.accessJwt}` }, signal: pController.signal });
 				if (profileResp.ok) { const profileData = await profileResp.json(); this.userAvatar = profileData.avatar || ''; }
 				clearTimeout(pTimeout);
-			} catch (e) { console.error(locale.avatarFetchFailed + ":", e); }
+							} catch (e) { console.error(this.getLocale().avatarFetchFailed + ":", e); }
 			clearTimeout(timeout);
 			return true;
-		} catch (error) { new Notice(`${locale.loginFailed}: ${error.message}`); return false; }
+		} catch (error) { new Notice(`${this.getLocale().loginFailed}: ${error.message}`); return false; }
 	}
 
 	detectFacets(text: string) {
@@ -178,8 +239,8 @@ export default class BlueskyPlugin extends Plugin {
 	}
 
 	async postToBluesky(text: string, embed?: Embed, retried: boolean = false): Promise<boolean> {
-		if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) { new Notice(locale.postContentEmpty); return false; }
-		if (countGraphemes(text) > 300) { new Notice(locale.postTooLong); return false; }
+		if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) { new Notice(this.getLocale().postContentEmpty); return false; }
+		if (countGraphemes(text) > 300) { new Notice(this.getLocale().postTooLong); return false; }
 		if (!this.accessJwt) { if (!(await this.login())) return false; }
 		if (!this.did) { if (!(await this.login())) return false; }
 		try {
@@ -195,18 +256,18 @@ export default class BlueskyPlugin extends Plugin {
 					if (response.status === 401 && !retried && (await this.login())) return this.postToBluesky(text, embed, true);
 					const errorBody = await response.json().catch(() => ({}));
 					console.error('Bluesky post failed:', errorBody);
-					const message = (errorBody && (errorBody.message || errorBody.error)) || `${locale.postFailed}: ${response.status}`;
+					const message = (errorBody && (errorBody.message || errorBody.error)) || `${this.getLocale().postFailed}: ${response.status}`;
 					throw new Error(message);
 				}
 			} catch (e: any) {
-				if (e?.name === 'AbortError') throw new Error(locale.postTimeout);
+				if (e?.name === 'AbortError') throw new Error(this.getLocale().postTimeout);
 				throw e;
 			} finally {
 				clearTimeout(timeout);
 			}
-			new Notice(locale.postSuccess);
+			new Notice(this.getLocale().postSuccess);
 			return true;
-		} catch (error) { new Notice(`${locale.postFailed}: ${error.message}`); return false; }
+		} catch (error) { new Notice(`${this.getLocale().postFailed}: ${error.message}`); return false; }
 	}
 }
 
@@ -248,12 +309,12 @@ class PostModal extends Modal {
 
 		// キャンセルボタン
 		new ButtonComponent(headerEl)
-			.setButtonText(locale.cancel)
+			.setButtonText(this.plugin.getLocale().cancel)
 			.onClick(() => this.close());
 
 		// 投稿ボタン
 		this.postButton = new ButtonComponent(headerEl)
-			.setButtonText(locale.post)
+			.setButtonText(this.plugin.getLocale().post)
 			.setCta()
 			.onClick(() => this.handlePost());
 
@@ -261,7 +322,7 @@ class PostModal extends Modal {
 		if (this.plugin.userAvatar) {
 			mainEl.createEl('img', { cls: 'bluesky-avatar', attr: { src: this.plugin.userAvatar, alt: 'User avatar' } });
 		}
-		this.textArea = mainEl.createEl('textarea', { cls: 'bluesky-textarea', attr: { placeholder: locale.placeholderText } });
+		this.textArea = mainEl.createEl('textarea', { cls: 'bluesky-textarea', attr: { placeholder: this.plugin.getLocale().placeholderText } });
 
 		let displayText = this.initialText;
 		if (this.plugin.settings.defaultHashtags?.trim()) {
@@ -286,13 +347,13 @@ class PostModal extends Modal {
 		// ホットキー表示付きの画像追加ボタン
 		new ButtonComponent(actionsEl)
 			.setIcon('image-file')
-			.setTooltip(`${locale.addImage} (最大4枚) - ${this.plugin.settings.hotkeys.addImage}`)
+			.setTooltip(`${this.plugin.getLocale().addImage} (最大4枚) - ${this.plugin.settings.hotkeys.addImage}`)
 			.onClick(() => this.fileInput.click());
 
 		// 絵文字ボタン
 		new ButtonComponent(actionsEl)
 			.setIcon('smile')
-			.setTooltip(`${locale.addEmoji} - ${this.plugin.settings.hotkeys.emoji}`)
+			.setTooltip(`${this.plugin.getLocale().addEmoji} - ${this.plugin.settings.hotkeys.emoji}`)
 			.onClick(() => this.toggleEmojiPicker());
 
 		// 文字カウンターを右端に配置
@@ -302,11 +363,11 @@ class PostModal extends Modal {
 		const helpEl = footerEl.createDiv({ cls: 'bluesky-hotkey-help' });
 		helpEl.innerHTML = `
 			<small>
-				<strong>ホットキー:</strong>
-				${this.plugin.settings.hotkeys.cancel}: ${locale.cancel} |
-				${this.plugin.settings.hotkeys.post}: ${locale.post} |
-				${this.plugin.settings.hotkeys.addImage}: ${locale.addImage} |
-				${this.plugin.settings.hotkeys.emoji}: ${locale.addEmoji}
+				<strong>${this.plugin.getLocale().hotkeys}:</strong>
+				${this.plugin.settings.hotkeys.cancel}: ${this.plugin.getLocale().cancel} |
+				${this.plugin.settings.hotkeys.post}: ${this.plugin.getLocale().post} |
+				${this.plugin.settings.hotkeys.addImage}: ${this.plugin.getLocale().addImage} |
+				${this.plugin.settings.hotkeys.emoji}: ${this.plugin.getLocale().addEmoji}
 			</small>
 		`;
 
@@ -331,27 +392,27 @@ class PostModal extends Modal {
 		// 絵文字カテゴリとデータ
 		const emojiCategories = [
 			{
-				name: locale.emotions,
+				name: this.plugin.getLocale().emotions,
 				emojis: ['😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉', '😌', '😍', '🥰', '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🥸', '🤩', '🥳']
 			},
 			{
-				name: locale.hands,
+				name: this.plugin.getLocale().hands,
 				emojis: ['👍', '👎', '👌', '✌️', '🤞', '🤟', '🤘', '🤙', '👈', '👉', '👆', '🖕', '👇', '☝️', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '✍️', '👋', '🤚', '🖐️', '✋', '🖖', '👊', '✊', '🤛', '🤜']
 			},
 			{
-				name: locale.hearts,
+				name: this.plugin.getLocale().hearts,
 				emojis: ['❤️', '🧡', '💛', '💚', '💙', '💜', '🤎', '🖤', '🤍', '💔', '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '💟', '♥️', '💯', '💢', '💥', '💦', '💨', '🕳️', '💣', '💬', '👁️‍🗨️', '🗨️', '🗯️', '💭']
 			},
 			{
-				name: locale.nature,
+				name: this.plugin.getLocale().nature,
 				emojis: ['🌱', '🌿', '🍀', '🌾', '🌵', '🌲', '🌳', '🌴', '☀️', '🌞', '🌛', '🌜', '🌚', '🌕', '🌖', '🌗', '🌘', '🌑', '🌒', '🌓', '🌔', '🌙', '⭐', '🌟', '💫', '⚡', '☁️', '⛅', '⛈️', '🌤️', '🌦️', '🌧️']
 			},
 			{
-				name: locale.food,
+				name: this.plugin.getLocale().food,
 				emojis: ['🍎', '🍐', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓', '🫐', '🍈', '🍒', '🍑', '🥭', '🍍', '🥥', '🥝', '🍅', '🍆', '🥑', '🥦', '🥬', '🥒', '🌶️', '🫑', '🌽', '🥕', '🫒', '🧄', '🧅', '🥔', '🍠']
 			},
 			{
-				name: locale.activities,
+				name: this.plugin.getLocale().activities,
 				emojis: ['⚽', '🏀', '🏈', '⚾', '🥎', '🎾', '🏐', '🏉', '🥏', '🎱', '🪀', '🏓', '🏸', '🏒', '🏑', '🥍', '🏏', '🪃', '🥅', '⛳', '🪁', '🏹', '🎣', '🤿', '🥊', '🥋', '🎽', '🛹', '🛼', '🛷', '⛸️']
 			}
 		];
@@ -362,7 +423,7 @@ class PostModal extends Modal {
 
 					// ヘッダー
 		const headerEl = this.emojiPickerContainer.createDiv({ cls: 'bluesky-emoji-header' });
-		headerEl.createSpan({ text: locale.selectEmoji, cls: 'bluesky-emoji-title' });
+		headerEl.createSpan({ text: this.plugin.getLocale().selectEmoji, cls: 'bluesky-emoji-title' });
 		const closeBtn = headerEl.createDiv({ cls: 'bluesky-emoji-close' });
 		setIcon(closeBtn, 'x');
 		closeBtn.onclick = () => this.hideEmojiPicker();
@@ -535,7 +596,7 @@ class PostModal extends Modal {
 		const files = (event.target as HTMLInputElement).files;
 		if (!files) return;
 		const remainingSlots = Math.max(0, 4 - this.selectedImages.length);
-		if (remainingSlots === 0) { new Notice(locale.maxImagesReached); (event.target as HTMLInputElement).value = ''; return; }
+		if (remainingSlots === 0) { new Notice(this.plugin.getLocale().maxImagesReached); (event.target as HTMLInputElement).value = ''; return; }
 		if (files.length > 0) {
 			this.linkPreviewData = null;
 			this.linkPreviewContainer.empty();
@@ -663,10 +724,10 @@ class PostModal extends Modal {
 	async handlePost() {
 		const text = this.textArea.value.trim();
 		if (!text && this.selectedImages.length === 0) {
-			new Notice(locale.pleaseEnterContent);
+			new Notice(this.plugin.getLocale().pleaseEnterContent);
 			return;
 		}
-		this.postButton.setButtonText(locale.posting).setDisabled(true);
+		this.postButton.setButtonText(this.plugin.getLocale().posting).setDisabled(true);
 		let embed: Embed | undefined;
 
 		if (this.selectedImages.length > 0) {
@@ -702,8 +763,8 @@ class PostModal extends Modal {
 				}));
 				embed = { $type: 'app.bsky.embed.images', images: uploadedImages };
 			} catch (error) {
-				new Notice(`${locale.imageUploadError}: ${error.message}`);
-				this.postButton.setButtonText(locale.post).setDisabled(false);
+							new Notice(`${this.plugin.getLocale().imageUploadError}: ${error.message}`);
+			this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
 				return;
 			}
 		} else if (this.linkPreviewData?.title) {
@@ -739,7 +800,7 @@ class PostModal extends Modal {
 		if (await this.plugin.postToBluesky(text, embed)) {
 			this.close();
 		} else {
-			this.postButton.setButtonText(locale.post).setDisabled(false);
+			this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
 		}
 	}
 
@@ -770,13 +831,13 @@ class BlueskySettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl('h2', { text: locale.settingsTitle });
+		containerEl.createEl('h2', { text: this.plugin.getLocale().settingsTitle });
 
 		new Setting(containerEl)
-			.setName(locale.handleLabel)
-			.setDesc(locale.handleDesc)
+			.setName(this.plugin.getLocale().handleLabel)
+			.setDesc(this.plugin.getLocale().handleDesc)
 			.addText(text => text
-				.setPlaceholder(locale.handlePlaceholder)
+				.setPlaceholder(this.plugin.getLocale().handlePlaceholder)
 				.setValue(this.plugin.settings.handle)
 				.onChange(async (value) => {
 					this.plugin.settings.handle = value;
@@ -784,10 +845,10 @@ class BlueskySettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName(locale.passwordLabel)
-			.setDesc(locale.passwordDesc)
+			.setName(this.plugin.getLocale().passwordLabel)
+			.setDesc(this.plugin.getLocale().passwordDesc)
 			.addText(text => {
-				text.setPlaceholder(locale.passwordPlaceholder)
+				text.setPlaceholder(this.plugin.getLocale().passwordPlaceholder)
 					.setValue(this.plugin.settings.password);
 				// パスワードをマスク
 				text.inputEl.type = 'password';
@@ -799,10 +860,10 @@ class BlueskySettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName(locale.timeoutLabel)
-			.setDesc(locale.timeoutDesc)
+			.setName(this.plugin.getLocale().timeoutLabel)
+			.setDesc(this.plugin.getLocale().timeoutDesc)
 			.addText(text => text
-				.setPlaceholder(locale.timeoutPlaceholder)
+				.setPlaceholder(this.plugin.getLocale().timeoutPlaceholder)
 				.setValue(String(this.plugin.settings.networkTimeoutMs ?? 15000))
 				.onChange(async (value) => {
 					const n = Number(value);
@@ -812,10 +873,10 @@ class BlueskySettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName(locale.hashtagsLabel)
-			.setDesc(locale.hashtagsDesc)
+			.setName(this.plugin.getLocale().hashtagsLabel)
+			.setDesc(this.plugin.getLocale().hashtagsDesc)
 			.addText(text => text
-				.setPlaceholder(locale.hashtagsPlaceholder)
+				.setPlaceholder(this.plugin.getLocale().hashtagsPlaceholder)
 				.setValue(this.plugin.settings.defaultHashtags)
 				.onChange(async (value) => {
 					this.plugin.settings.defaultHashtags = value;
@@ -823,11 +884,11 @@ class BlueskySettingTab extends PluginSettingTab {
 				}));
 
 		// ホットキー設定セクション
-		containerEl.createEl('h3', { text: locale.hotkeysTitle });
+		containerEl.createEl('h3', { text: this.plugin.getLocale().hotkeysTitle });
 
 		new Setting(containerEl)
-			.setName(locale.cancelHotkeyLabel)
-			.setDesc(locale.cancelHotkeyDesc)
+			.setName(this.plugin.getLocale().cancelHotkeyLabel)
+			.setDesc(this.plugin.getLocale().cancelHotkeyDesc)
 			.addText(text => text
 				.setPlaceholder('Escape')
 				.setValue(this.plugin.settings.hotkeys.cancel)
@@ -838,8 +899,8 @@ class BlueskySettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName(locale.postHotkeyLabel)
-			.setDesc(locale.postHotkeyDesc)
+			.setName(this.plugin.getLocale().postHotkeyLabel)
+			.setDesc(this.plugin.getLocale().postHotkeyDesc)
 			.addText(text => text
 				.setPlaceholder('Mod+Enter')
 				.setValue(this.plugin.settings.hotkeys.post)
@@ -850,8 +911,8 @@ class BlueskySettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName(locale.imageHotkeyLabel)
-			.setDesc(locale.imageHotkeyDesc)
+			.setName(this.plugin.getLocale().imageHotkeyLabel)
+			.setDesc(this.plugin.getLocale().imageHotkeyDesc)
 			.addText(text => text
 				.setPlaceholder('Mod+I')
 				.setValue(this.plugin.settings.hotkeys.addImage)
@@ -862,8 +923,8 @@ class BlueskySettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName(locale.emojiHotkeyLabel)
-			.setDesc(locale.emojiHotkeyDesc)
+			.setName(this.plugin.getLocale().emojiHotkeyLabel)
+			.setDesc(this.plugin.getLocale().emojiHotkeyDesc)
 			.addText(text => text
 				.setPlaceholder('Mod+E')
 				.setValue(this.plugin.settings.hotkeys.emoji)
@@ -874,17 +935,17 @@ class BlueskySettingTab extends PluginSettingTab {
 				}));
 
 		containerEl.createEl('p', {
-			text: locale.appPasswordNote,
+			text: this.plugin.getLocale().appPasswordNote,
 			cls: 'setting-item-description'
 		});
 
 		containerEl.createEl('p', {
-			text: locale.hotkeyFormatNote,
+			text: this.plugin.getLocale().hotkeyFormatNote,
 			cls: 'setting-item-description'
 		});
 
 		containerEl.createEl('p', {
-			text: locale.hotkeyConflictNote,
+			text: this.plugin.getLocale().hotkeyConflictNote,
 			cls: 'setting-item-description'
 		});
 
@@ -1006,14 +1067,14 @@ class BlueskySettingTab extends PluginSettingTab {
 		let warningClass = '';
 
 		if (duplicates.length > 0) {
-			warningMessage += `${locale.hotkeyConflictWarning}\n\n`;
-			warningMessage += `${locale.duplicateHotkeys}: ${duplicates.join(', ')}\n\n`;
+			warningMessage += `${this.plugin.getLocale().hotkeyConflictWarning}\n`;
+			warningMessage += `${this.plugin.getLocale().duplicateHotkeys}: ${duplicates.join(', ')}\n`;
 			warningClass = 'hotkey-conflict-error';
 		}
 
 		if (conflicts.length > 0) {
 			if (!warningMessage) {
-				warningMessage += `${locale.hotkeyConflictWarning}\n\n`;
+				warningMessage += `${this.plugin.getLocale().hotkeyConflictWarning}\n`;
 			}
 			warningMessage += HotkeyConflictDetector.generateConflictDescription(conflicts);
 			warningClass = warningClass || 'hotkey-conflict-warning';
