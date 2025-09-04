@@ -1,94 +1,190 @@
-# Obsidian Sample Plugin
+# Post To Bluesky - Obsidianプラグイン
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+ObsidianからBluesky（ブルースカイ）に投稿できるプラグインです。選択したテキストやノート全体、または新規作成した投稿をBlueskyに投稿できます。
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## 主な機能
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+### 📝 投稿機能
+- **選択テキストの投稿**: エディタで選択したテキストをBlueskyに投稿
+- **ノート全体の投稿**: 現在のノートの内容をBlueskyに投稿
+- **新規投稿作成**: 空の投稿モーダルを開いて新しく投稿を作成
 
-## First time developing plugins?
+### 🖼️ 画像添付
+- 最大4枚までの画像を添付可能
+- ドラッグ&ドロップで画像を追加
+- 画像のアスペクト比を自動調整
 
-Quick starting guide for new plugin devs:
+### 😊 絵文字ピッカー
+- カテゴリ別に整理された絵文字選択
+- 感情、手、ハート、自然、食べ物、アクティビティなどの分類
+- ホットキーで素早くアクセス
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+### ⚙️ カスタマイズ設定
+- Blueskyアカウントの設定（ハンドル、パスワード）
+- デフォルトハッシュタグの設定
+- ネットワークタイムアウトの調整
+- カスタムホットキーの設定
 
-## Releasing new releases
+### ⌨️ ホットキー設定
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+**Modキーについて**
+`Mod`キーは、使用しているオペレーティングシステムに応じて自動的に適切なキーに置き換わります：
+- **macOS**: `⌘` (Commandキー)
+- **Windows/Linux**: `Ctrl`キー
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+**デフォルトホットキー**
+| 機能 | ショートカット | macOS | Windows/Linux |
+|------|----------------|-------|---------------|
+| 投稿送信 | `Mod+Enter` | `⌘+Enter` | `Ctrl+Enter` |
+| 画像追加 | `Mod+I` | `⌘+I` | `Ctrl+I` |
+| 絵文字ピッカー | `Mod+E` | `⌘+E` | `Ctrl+E` |
+| キャンセル | `Escape` | `Escape` | `Escape` |
 
-## Adding your plugin to the community plugin list
+**カスタマイズ可能**
+各ホットキーは設定画面で自由に変更できます。システムショートカットとの競合を避けるため、ホットキー衝突検出機能も搭載されています。
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+### 🌐 多言語対応
+- 日本語と英語のローカライゼーション
+- 自動言語検出と切り替え
 
-## How to use
+## インストール方法
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+### 手動インストール
+1. このリポジトリをクローンまたはダウンロード
+2. `main.js`、`styles.css`、`manifest.json`を`.obsidian/plugins/post-to-bluesky/`フォルダにコピー
+3. Obsidianを再起動
+4. 設定でプラグインを有効化
 
-## Manually installing the plugin
+### 開発環境でのセットアップ
+```bash
+# 依存関係のインストール
+npm install
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+# 開発モードでのコンパイル
+npm run dev
 ```
 
-If you have multiple URLs, you can also do:
+## 使用方法
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
+### 1. 初期設定
+1. Obsidianの設定を開く
+2. 「Post To Bluesky」の設定タブを選択
+3. Blueskyのハンドルとパスワード（アプリパスワード）を入力
+4. 必要に応じてデフォルトハッシュタグを設定
+
+### 2. 投稿の作成
+- **コマンドパレット**から「Post selection to Bluesky」を実行
+- **リボンアイコン**をクリックして新規投稿を作成
+- **右クリックメニュー**から投稿オプションを選択
+
+### 3. 投稿の編集
+- テキストの入力と編集
+- 画像の追加（最大4枚）
+- 絵文字の挿入
+- ハッシュタグの追加
+
+### 4. 投稿の送信
+- `Mod+Enter`で投稿を送信
+- または投稿ボタンをクリック
+
+## 技術仕様
+
+### 対応環境
+- **Obsidian**: 0.15.0以上
+- **プラットフォーム**: デスクトップのみ（Windows、macOS、Linux）
+- **言語**: TypeScript
+
+### 主要な技術
+- **Obsidian Plugin API**: プラグインの基盤機能
+- **Bluesky API**: 投稿と認証の処理
+- **TypeScript**: 型安全性と開発効率の向上
+- **ESBuild**: 高速なTypeScriptコンパイル
+
+### アーキテクチャ
+- **モジュール化**: 機能別にファイルを分割
+- **型安全性**: インターフェースと型定義による堅牢性
+- **エラーハンドリング**: 包括的なエラー処理とユーザーフィードバック
+- **ホットキー衝突検出**: システムショートカットとの競合を防止
+
+## 設定項目
+
+### 基本設定
+- **Handle**: Blueskyのユーザーハンドル（例: `@username.bsky.social`）
+- **Password**: Blueskyのアプリパスワード
+- **Default Hashtags**: デフォルトで追加されるハッシュタグ
+- **Network Timeout**: ネットワークリクエストのタイムアウト時間（ミリ秒）
+
+### ホットキー設定
+- **Cancel**: 投稿をキャンセルするホットキー（デフォルト: `Escape`）
+- **Post**: 投稿を送信するホットキー（デフォルト: `Mod+Enter`）
+- **Add Image**: 画像を追加するホットキー（デフォルト: `Mod+I`）
+- **Emoji**: 絵文字ピッカーを開くホットキー（デフォルト: `Mod+E`）
+
+**Modキーの動作**
+- macOSでは `⌘` (Command)キーとして動作
+- Windows/Linuxでは `Ctrl`キーとして動作
+- プラットフォームに応じて自動的に適切なキーが使用される
+
+## トラブルシューティング
+
+### よくある問題
+1. **ログインできない**: アプリパスワードが正しく設定されているか確認
+2. **投稿が失敗する**: ネットワーク接続とBlueskyのサービス状況を確認
+3. **ホットキーが動作しない**: 他のアプリケーションとの競合を確認
+
+### ログの確認
+- Obsidianの開発者コンソールでエラーメッセージを確認
+- ネットワークタブでAPIリクエストの状況を確認
+
+## 開発者向け情報
+
+### プロジェクト構造
+```
+Post-To-Bluesky/
+├── main.ts                 # メインプラグインクラス
+├── hotkeyConflictDetector.ts # ホットキー衝突検出
+├── locales.ts              # 多言語対応
+├── styles.css              # スタイルシート
+├── manifest.json           # プラグイン情報
+└── package.json            # 依存関係管理
 ```
 
-## API Documentation
+### ビルドとテスト
+```bash
+# 開発モード
+npm run dev
 
-See https://github.com/obsidianmd/obsidian-api
+# ビルド
+npm run build
+
+# リントチェック
+npm run lint
+```
+
+## ライセンス
+
+このプロジェクトはMITライセンスの下で公開されています。
+
+## 作者
+
+**RieTamura** - [GitHub](https://github.com/RieTamura/Post-To-Bluesky)
+
+## サポート
+
+- **Issues**: [GitHub Issues](https://github.com/RieTamura/Post-To-Bluesky/issues)
+- **Sponsor**: [GitHub Sponsors](https://github.com/sponsors/RieTamura)
+
+## 更新履歴
+
+### v1.0.0
+- 初回リリース
+- 基本的な投稿機能
+- 画像添付機能
+- 絵文字ピッカー
+- 多言語対応
+- ホットキー設定
+- ホットキー衝突検出
+
+---
+
+**注意**: このプラグインを使用するには、Blueskyアカウントとアプリパスワードが必要です。アプリパスワードはBlueskyの設定画面で生成できます。
