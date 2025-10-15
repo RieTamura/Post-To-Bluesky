@@ -5,7 +5,7 @@
 	"minAppVersion": "0.15.0",
 	"description": "Post selected text or entire note to Bluesky.",
 	"author": "RieTamura",
-	"authorUrl": "https://github.com/RieTamura/Post-To-Bluesky",
+	"authorUrl": "https://github.com/RieTamura",
 	"fundingUrl": "https://github.com/sponsors/RieTamura",
 	"isDesktopOnly": true
 }
