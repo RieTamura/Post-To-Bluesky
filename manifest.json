@@ -3,7 +3,7 @@
 	"name": "Post To Bluesky",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "This plugin posts from Obsidian to Bluesky.",
+	"description": "Post selected text or entire note to Bluesky.",
 	"author": "RieTamura",
 	"authorUrl": "https://github.com/RieTamura/Post-To-Bluesky",
 	"fundingUrl": "https://github.com/sponsors/RieTamura",
