@@ -27,7 +27,7 @@ Thank you for your submission, an automated scan of your plugin code's revealed 
 - Remove or properly type unused symbols (`LocaleStrings`, `parsed`, `MarkdownView`).
 - Revisit doc copies if needed once the code settles.
 
-Required
+# Required
 
 ## 'locale ?? getCurrentLocale() ?? ''' may use Object's default stringification format ('[object Object]') when stringified.
 [1](https://github.com/RieTamura/Post-To-Bluesky/blob/4a950a5bd051cb7672f0c99aa31b6d8b6122c814/hotkeyConflictDetector.ts#L292-L292)

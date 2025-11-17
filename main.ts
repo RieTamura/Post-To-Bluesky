@@ -330,11 +330,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		hotkeysTitle: 'Hotkey Settings',
 		cancelHotkeyLabel: 'Cancel Hotkey',
 		cancelHotkeyDesc: 'Hotkey to cancel posting',
-		postHotkeyLabel: 'Post Hotkey',
+		postHotkeyLabel: 'Post hotkey',
 		postHotkeyDesc: 'Hotkey to post',
-		imageHotkeyLabel: 'Add Image Hotkey',
+		imageHotkeyLabel: 'Add image hotkey',
 		imageHotkeyDesc: 'Hotkey to add image',
-		emojiHotkeyLabel: 'Add Emoji Hotkey',
+		emojiHotkeyLabel: 'Add emoji hotkey',
 		emojiHotkeyDesc: 'Hotkey to add emoji',
 		appPasswordNote: 'Use your Bluesky app password.',
 		hotkeyFormatNote: 'Specify hotkeys like "Mod+Enter".',
@@ -430,7 +430,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		private async readObsidianConfig(): Promise<string | null> {
 			const adapter = this.app.vault?.adapter;
 			if (!adapter) return null;
-			const configDir = this.app.vault.configDir ?? '.obsidian';
+			const configDir = this.app.vault.configDir;
 			const candidates = ['app.json', 'config.json', 'settings.json'].map((name) => `${configDir}/${name}`);
 			for (const configPath of candidates) {
 				try {
@@ -971,7 +971,7 @@ class PostModal extends Modal {
 		if (this.matchesHotkey(e, settings.post)) {
 			e.preventDefault();
 			if (!this.postButton.disabled) {
-				this.handlePost();
+				void this.handlePost();
 			}
 			return;
 		}
@@ -1065,9 +1065,8 @@ class PostModal extends Modal {
 	updateImagePreviews() {
 		// Revoke existing object URLs before clearing to avoid memory leaks
 		this.imagePreviewContainer.querySelectorAll('img').forEach((el) => {
-			const imgEl = el as HTMLImageElement;
-			if (imgEl.src && imgEl.src.startsWith('blob:')) {
-				URL.revokeObjectURL(imgEl.src);
+			if (el.src && el.src.startsWith('blob:')) {
+				URL.revokeObjectURL(el.src);
 			}
 		});
 		this.imagePreviewContainer.empty();
@@ -1264,7 +1263,7 @@ class PostModal extends Modal {
 		// 画像プレビューの blob URL を解放
 		try {
 			this.imagePreviewContainer?.querySelectorAll('img').forEach((el) => {
-				const src = (el as HTMLImageElement).src;
+				const src = el.src;
 				if (src?.startsWith('blob:')) URL.revokeObjectURL(src);
 			});
 		} catch (error) {
