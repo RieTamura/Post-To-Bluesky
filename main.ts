@@ -118,10 +118,10 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	defaultHashtags: '',
 	forceLanguage: 'en',
 	hotkeys: {
-		cancel: '',
-		post: '',
-		addImage: '',
-		emoji: ''
+		cancel: 'Escape',
+		post: 'Mod+Enter',
+		addImage: 'Mod+I',
+		emoji: 'Mod+E'
 	},
 	language: 'en'
 };
@@ -1380,7 +1380,7 @@ class BlueskySettingTab extends PluginSettingTab {
 				.setPlaceholder('e.g., Ctrl+Enter')
 				.setValue(this.plugin.settings.hotkeys.post)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.post = value;
+					this.plugin.settings.hotkeys.post = value || 'Mod+Enter';
 					await this.plugin.saveSettings();
 					this.checkHotkeyConflicts();
 				}));
@@ -1392,7 +1392,7 @@ class BlueskySettingTab extends PluginSettingTab {
 				.setPlaceholder('e.g., Ctrl+I')
 				.setValue(this.plugin.settings.hotkeys.addImage)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.addImage = value;
+					this.plugin.settings.hotkeys.addImage = value || 'Mod+I';
 					await this.plugin.saveSettings();
 					this.checkHotkeyConflicts();
 				}));
@@ -1404,7 +1404,7 @@ class BlueskySettingTab extends PluginSettingTab {
 				.setPlaceholder('e.g., Ctrl+E')
 				.setValue(this.plugin.settings.hotkeys.emoji)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.emoji = value;
+					this.plugin.settings.hotkeys.emoji = value || 'Mod+E';
 					await this.plugin.saveSettings();
 					this.checkHotkeyConflicts();
 				}));
