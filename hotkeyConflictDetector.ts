@@ -289,7 +289,7 @@ export class HotkeyConflictDetector {
     
     // ロケールを取得（指定されていない場合はブラウザ設定を使用）
     const browserLocale = typeof navigator !== 'undefined' ? navigator.language : 'en';
-    const localeTag = (locale ?? browserLocale ?? 'en').toLowerCase();
+    const localeTag = (locale ?? browserLocale).toLowerCase();
     const currentLocale = localeTag.startsWith('ja') ? 'ja' : 'en';
     const localeStrings: LocaleStrings = currentLocale === 'ja' ? ja : en;
     
