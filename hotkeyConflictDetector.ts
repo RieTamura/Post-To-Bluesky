@@ -1,6 +1,5 @@
 // hotkeyConflictDetector.ts - ホットキー衝突検出機能
 import { ja, en } from './locales';
-import type { LocaleStrings } from './locales';
 
 export interface HotkeyConflict {
   type: 'browser' | 'os' | 'common';
@@ -291,7 +290,7 @@ export class HotkeyConflictDetector {
     const browserLocale = typeof navigator !== 'undefined' ? navigator.language : 'en';
     const localeTag = (locale ?? browserLocale).toLowerCase();
     const currentLocale = localeTag.startsWith('ja') ? 'ja' : 'en';
-    const localeStrings: LocaleStrings = currentLocale === 'ja' ? ja : en;
+    const localeStrings = currentLocale === 'ja' ? ja : en;
     
     const browserConflicts = conflicts.filter(c => c.type === 'browser');
     const osConflicts = conflicts.filter(c => c.type === 'os');

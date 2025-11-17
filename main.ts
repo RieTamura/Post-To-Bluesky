@@ -38,6 +38,8 @@ type IntlWithOptionalApis = typeof Intl & {
 	getCanonicalLocales?: (locales?: string | string[]) => string[];
 };
 
+type ErrorResponse = { message?: string; error?: string };
+
 // Locale表示文字列型
 type LocaleStrings = {
 	post: string;
@@ -366,25 +368,25 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		userAvatar: string | undefined;
 		languageIntervalId: number | null = null;
 	
-		async onload() {
-			await this.loadSettings();
-			await this.updateLanguageSettings();
-			this.addSettingTab(new BlueskySettingTab(this.app, this));
+	async onload() {
+		await this.loadSettings();
+		await this.updateLanguageSettings();
+		this.addSettingTab(new BlueskySettingTab(this.app, this));
 
-			// 投稿用コマンド登録（コマンドパレット表示 & デフォルトホットキー）
-			this.addCommand({
-				id: 'open-bluesky-composer',
-				name: 'Open post composer',
-				callback: () => this.openPostModal()
-			});
+		// 投稿用コマンド登録（コマンドパレット表示 & デフォルトホットキー）
+		this.addCommand({
+			id: 'open-bluesky-composer',
+			name: 'Open post composer',
+			callback: () => this.openPostModal()
+		});
 
-			// リボンアイコン（左サイドバー）
-			this.addRibbonIcon('send', 'Open post composer', () => this.openPostModal());
-		}
-	
-		onunload() { }
-	
-		async loadSettings() {
+		// リボンアイコン（左サイドバー）
+		this.addRibbonIcon('send', 'Open post composer', () => this.openPostModal());
+	}
+
+	onunload(): void {}
+
+	async loadSettings() {
 			const loaded = await this.loadData();
 			if (loaded && typeof loaded.language === 'string') {
 				const originalLang = loaded.language.trim();
@@ -505,16 +507,14 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			throw new Error('Operation failed after retries');
 		}
 
-		private createHttpError(response: RequestUrlResponse, fallbackMessage: string): HttpError {
-			const errorBody = (response.json as { message?: string; error?: string }) ?? {};
-			const message = errorBody.message || errorBody.error || fallbackMessage;
-			const err = new Error(message) as HttpError;
-			err.status = response.status;
-			err.response = response;
-			return err;
-		}
-
-		private async fetchProfileAvatar(actorDid: string): Promise<void> {
+	private createHttpError(response: RequestUrlResponse, fallbackMessage: string): HttpError {
+		const errorBody = (response.json as ErrorResponse) ?? {};
+		const message = errorBody.message || errorBody.error || fallbackMessage;
+		const err = new Error(message) as HttpError;
+		err.status = response.status;
+		err.response = response;
+		return err;
+	}		private async fetchProfileAvatar(actorDid: string): Promise<void> {
 			if (!this.accessJwt) return;
 			try {
 				const response = await this.requestWithTimeout({
