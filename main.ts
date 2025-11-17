@@ -118,10 +118,10 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	defaultHashtags: '',
 	forceLanguage: 'en',
 	hotkeys: {
-		cancel: 'Escape',
-		post: 'Mod+Enter',
-		addImage: 'Mod+I',
-		emoji: 'Mod+E'
+		cancel: '',
+		post: '',
+		addImage: '',
+		emoji: ''
 	},
 	language: 'en'
 };
@@ -168,9 +168,7 @@ interface LinkPreviewData {
 type FacetByteRange = { byteStart: number; byteEnd: number };
 type LinkFacetFeature = { $type: 'app.bsky.richtext.facet#link'; uri: string };
 type TagFacetFeature = { $type: 'app.bsky.richtext.facet#tag'; tag: string };
-type LinkFacet = { index: FacetByteRange; features: [LinkFacetFeature] };
-type TagFacet = { index: FacetByteRange; features: [TagFacetFeature] };
-type Facet = LinkFacet | TagFacet;
+type Facet = { index: FacetByteRange; features: (LinkFacetFeature | TagFacetFeature)[] };
 
 interface UploadBlobResponse {
 	blob: BlueskyBlobRef;
@@ -567,7 +565,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				const uri = trimTrailingPunctuation(rawUri);
 				const byteStart = encoder.encode(text.slice(0, match.index)).length;
 				const byteEnd = byteStart + encoder.encode(uri).length;
-				const linkFacet: LinkFacet = {
+				const linkFacet: Facet = {
 					index: { byteStart, byteEnd },
 					features: [{ $type: 'app.bsky.richtext.facet#link', uri }]
 				};
@@ -580,7 +578,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				if (countGraphemes(tagWithoutHash) > 64) continue;
 				const byteStart = encoder.encode(text.slice(0, match.index)).length;
 				const byteEnd = byteStart + encoder.encode(tag).length;
-				const tagFacet: TagFacet = {
+				const tagFacet: Facet = {
 					index: { byteStart, byteEnd },
 					features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }]
 				};
@@ -1379,10 +1377,10 @@ class BlueskySettingTab extends PluginSettingTab {
 			.setName(this.plugin.getLocale().postHotkeyLabel)
 			.setDesc(this.plugin.getLocale().postHotkeyDesc)
 			.addText(text => text
-				.setPlaceholder('Mod+Enter')
+				.setPlaceholder('e.g., Ctrl+Enter')
 				.setValue(this.plugin.settings.hotkeys.post)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.post = value || 'Mod+Enter';
+					this.plugin.settings.hotkeys.post = value;
 					await this.plugin.saveSettings();
 					this.checkHotkeyConflicts();
 				}));
@@ -1391,10 +1389,10 @@ class BlueskySettingTab extends PluginSettingTab {
 			.setName(this.plugin.getLocale().imageHotkeyLabel)
 			.setDesc(this.plugin.getLocale().imageHotkeyDesc)
 			.addText(text => text
-				.setPlaceholder('Mod+I')
+				.setPlaceholder('e.g., Ctrl+I')
 				.setValue(this.plugin.settings.hotkeys.addImage)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.addImage = value || 'Mod+I';
+					this.plugin.settings.hotkeys.addImage = value;
 					await this.plugin.saveSettings();
 					this.checkHotkeyConflicts();
 				}));
@@ -1403,10 +1401,10 @@ class BlueskySettingTab extends PluginSettingTab {
 			.setName(this.plugin.getLocale().emojiHotkeyLabel)
 			.setDesc(this.plugin.getLocale().emojiHotkeyDesc)
 			.addText(text => text
-				.setPlaceholder('Mod+E')
+				.setPlaceholder('e.g., Ctrl+E')
 				.setValue(this.plugin.settings.hotkeys.emoji)
 				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.emoji = value || 'Mod+E';
+					this.plugin.settings.hotkeys.emoji = value;
 					await this.plugin.saveSettings();
 					this.checkHotkeyConflicts();
 				}));
