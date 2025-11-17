@@ -1,4 +1,5 @@
-import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, MarkdownView } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, Platform } from 'obsidian';
+import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
 const EMOJI_LIST: string[] = [
@@ -9,6 +10,16 @@ const EMOJI_LIST: string[] = [
 	'📝','🖊️','📎','📌','📚','💡','🖥️','📱','⌚','🕹️','🎮','🎵','🎶','🎧','🎤','🎬','📷','🗓️','⏰','📦',
 	'🌞','🌙','☁️','🌧️','🌈','❄️','🌸','🌻','🍀','🍎','🍊','🍋','🍇','🍓','🥝','🥑','🍙','🍣','🍜','☕','🍺','🍻','🥂'
 ];
+
+type SegmenterCtor = new (
+	locales?: string | string[],
+	options?: { granularity?: 'grapheme' | 'word' | 'sentence' }
+) => { segment(input: string): IterableIterator<{ segment: string }> };
+
+type IntlWithOptionalApis = typeof Intl & {
+	Segmenter?: SegmenterCtor;
+	getCanonicalLocales?: (locales?: string | string[]) => string[];
+};
 
 // Locale表示文字列型
 type LocaleStrings = {
@@ -134,6 +145,37 @@ interface LinkPreviewData {
 	image?: string;
 	domain?: string;
 }
+
+type FacetByteRange = { byteStart: number; byteEnd: number };
+type LinkFacetFeature = { $type: 'app.bsky.richtext.facet#link'; uri: string };
+type TagFacetFeature = { $type: 'app.bsky.richtext.facet#tag'; tag: string };
+type LinkFacet = { index: FacetByteRange; features: [LinkFacetFeature] };
+type TagFacet = { index: FacetByteRange; features: [TagFacetFeature] };
+type Facet = LinkFacet | TagFacet;
+
+interface UploadBlobResponse {
+	blob: BlueskyBlobRef;
+}
+
+interface BlueskyPostRecord {
+	text: string;
+	createdAt: string;
+	$type: 'app.bsky.feed.post';
+	facets?: Facet[];
+	embed?: Embed;
+}
+
+interface CreateSessionResponse {
+	accessJwt: string;
+	refreshJwt: string;
+	did: string;
+}
+
+type ObsidianLanguageConfig = {
+	language?: string;
+	app?: { language?: string };
+	settings?: { language?: string };
+};
 // ---- End added types ----
 
 // ---- Added hotkey conflict detection types (fix for missing HotkeyConflict) ----
@@ -287,8 +329,10 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				function countGraphemes(str: string): number {
 					// For most cases, [...str] will split by Unicode code points
 					// For more accurate grapheme splitting, use Intl.Segmenter if available
-					if ('Segmenter' in Intl && typeof (Intl as any).Segmenter === 'function') {
-						const segmenter = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
+					const intlApi = Intl as IntlWithOptionalApis;
+					const segmenterCtor = intlApi.Segmenter;
+					if (typeof segmenterCtor === 'function') {
+						const segmenter = new segmenterCtor(undefined, { granularity: 'grapheme' });
 						return Array.from(segmenter.segment(str)).length;
 					}
 					return [...str].length;
@@ -310,16 +354,13 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 
 			// 投稿用コマンド登録（コマンドパレット表示 & デフォルトホットキー）
 			this.addCommand({
-				id: 'post-to-bluesky-open-modal',
-				name: 'Post to Bluesky', // シンプルな名称（言語切替時は再読み込みで反映可能）
-				callback: () => this.openPostModal(),
-				hotkeys: [
-					{ modifiers: [ 'Mod', 'Shift' ], key: 'b' } // Mod+Shift+B でモーダルを開く
-				]
+				id: 'open-bluesky-composer',
+				name: 'Open post composer',
+				callback: () => this.openPostModal()
 			});
 
 			// リボンアイコン（左サイドバー）
-			this.addRibbonIcon('send', 'Post to Bluesky', () => this.openPostModal());
+			this.addRibbonIcon('send', 'Open post composer', () => this.openPostModal());
 		}
 	
 		onunload() { }
@@ -329,8 +370,9 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			if (loaded && typeof loaded.language === 'string') {
 				const originalLang = loaded.language.trim();
 				try {
-					const canonical = typeof Intl !== 'undefined' && (Intl as any).getCanonicalLocales
-						? Intl.getCanonicalLocales(originalLang)
+					const intlApi = Intl as IntlWithOptionalApis;
+					const canonical = typeof intlApi.getCanonicalLocales === 'function'
+						? intlApi.getCanonicalLocales(originalLang)
 						: [];
 					if (Array.isArray(canonical) && canonical.length > 0) {
 						const primary = String(canonical[0]).split('-')[0];
@@ -365,44 +407,22 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		}
 	
 		private async readObsidianConfig(): Promise<string | null> {
-			try {
-				// @ts-ignore
-				if (this.app.vault && this.app.vault.adapter && this.app.vault.adapter.getFullPath) {
-					const possiblePaths = [
-						'.obsidian/app.json',
-						'.obsidian/config.json',
-						'.obsidian/settings.json'
-					];
-					for (const configPath of possiblePaths) {
-						let configContent: string | undefined;
-						let config: any;
-						try {
-							configContent = await this.app.vault.adapter.read(configPath);
-						} catch {
-							try {
-								// @ts-ignore
-								if ((this.app.vault.adapter as any).getFullPath) {
-									// @ts-ignore
-									const fullPath = (this.app.vault.adapter as any).getFullPath(configPath);
-									configContent = await this.app.vault.adapter.read(fullPath);
-								}
-							} catch {
-								continue;
-							}
-						}
-						if (typeof configContent === 'string' && configContent) {
-							try {
-								config = JSON.parse(configContent);
-							} catch {
-								continue;
-							}
-							if (config.language) return config.language;
-							if (config.app && config.app.language) return config.app.language;
-							if (config.settings && config.settings.language) return config.settings.language;
-						}
+			const adapter = this.app.vault?.adapter;
+			if (!adapter) return null;
+			const configDir = this.app.vault.configDir ?? '.obsidian';
+			const candidates = ['app.json', 'config.json', 'settings.json'].map((name) => `${configDir}/${name}`);
+			for (const configPath of candidates) {
+				try {
+					const configContent = await adapter.read(configPath);
+					const parsed = JSON.parse(configContent) as ObsidianLanguageConfig;
+					const detected = parsed.language ?? parsed.app?.language ?? parsed.settings?.language;
+					if (typeof detected === 'string') {
+						return detected;
 					}
+				} catch (error) {
+					console.debug('[Post-To-Bluesky] Unable to read config file', configPath, error);
 				}
-			} catch { }
+			}
 			return null;
 		}
 	
@@ -421,57 +441,89 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		getLocale(): LocaleStrings {
 			return this.currentLocale || getLocaleByObsidianLanguage('en');
 		}
+
+		private get effectiveTimeout(): number {
+			return Math.max(1000, this.settings.networkTimeoutMs ?? 15000);
+		}
+
+		private isSuccessStatus(status: number): boolean {
+			return status >= 200 && status < 300;
+		}
+
+		private async requestWithTimeout(params: RequestUrlParam, timeoutOverride?: number): Promise<RequestUrlResponse> {
+			const duration = timeoutOverride ?? this.effectiveTimeout;
+			let timer: number | null = null;
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				timer = window.setTimeout(() => reject(new Error('Request timed out')), duration);
+			});
+			try {
+				return await Promise.race([requestUrl(params), timeoutPromise]);
+			} finally {
+				if (timer !== null) {
+					window.clearTimeout(timer);
+				}
+			}
+		}
+
+		private async fetchProfileAvatar(actorDid: string): Promise<void> {
+			if (!this.accessJwt) return;
+			try {
+				const response = await this.requestWithTimeout({
+					url: `https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${actorDid}`,
+					headers: { Authorization: `Bearer ${this.accessJwt}` }
+				});
+				if (!this.isSuccessStatus(response.status)) return;
+				const profileData = response.json as { avatar?: string };
+				this.userAvatar = profileData.avatar || '';
+			} catch (error) {
+				console.error(this.getLocale().avatarFetchFailed + ':', error);
+			}
+		}
 	
 		async login(): Promise<boolean> {
-			if (!this.settings.handle || !this.settings.password) { new Notice(this.getLocale().loginRequired); return false; }
+			if (!this.settings.handle || !this.settings.password) {
+				new Notice(this.getLocale().loginRequired);
+				return false;
+			}
 			try {
-				const controller = new AbortController();
-				const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
-				const resp = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
+				const response = await this.requestWithTimeout({
+					url: 'https://bsky.social/xrpc/com.atproto.server.createSession',
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password }),
-					signal: controller.signal
+					body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password })
 				});
-				if (!resp.ok) throw new Error(`${this.getLocale().loginFailed}: ${resp.status}`);
-				const data = await resp.json();
+				if (!this.isSuccessStatus(response.status)) {
+					throw new Error(`${this.getLocale().loginFailed}: ${response.status}`);
+				}
+				const data = response.json as CreateSessionResponse;
 				this.accessJwt = data.accessJwt;
 				this.refreshJwt = data.refreshJwt;
 				this.did = data.did;
-				try {
-					const pController = new AbortController();
-					const pTimeout = setTimeout(() => pController.abort(), this.settings.networkTimeoutMs ?? 15000);
-					const profileResp = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${data.did}`, {
-						headers: { 'Authorization': `Bearer ${this.accessJwt}` },
-						signal: pController.signal
-					});
-					if (profileResp.ok) {
-						const profileData = await profileResp.json();
-						this.userAvatar = profileData.avatar || '';
-					}
-					clearTimeout(pTimeout);
-				} catch (e) {
-					console.error(this.getLocale().avatarFetchFailed + ':', e);
-				}
-				clearTimeout(timeout);
+				await this.fetchProfileAvatar(data.did);
 				return true;
-			} catch (error: any) {
-				new Notice(`${this.getLocale().loginFailed}: ${error.message}`);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				new Notice(`${this.getLocale().loginFailed}: ${message}`);
 				return false;
 			}
 		}
 	
-		detectFacets(text: string) {
-			const facets: any[] = [];
+		detectFacets(text: string): Facet[] | undefined {
+			const facets: Facet[] = [];
 			const encoder = new TextEncoder();
-			const linkRegex = /https?:\/\/[^\s<>()\[\]{}"']+/g;
+			const linkRegex = /https?:\/\/[^\s<>()\]{}"']+/g;
+			const trailingChars = /[\])}.,!?]+$/;
 			let match: RegExpExecArray | null;
 			while ((match = linkRegex.exec(text)) !== null) {
 				const rawUri = match[0];
-				const uri = rawUri.replace(/[.,!?)\]\}]+$/, '');
+				const uri = rawUri.replace(trailingChars, '');
 				const byteStart = encoder.encode(text.slice(0, match.index)).length;
 				const byteEnd = byteStart + encoder.encode(uri).length;
-				facets.push({ index: { byteStart, byteEnd }, features: [{ $type: 'app.bsky.richtext.facet#link', uri }] });
+				const linkFacet: LinkFacet = {
+					index: { byteStart, byteEnd },
+					features: [{ $type: 'app.bsky.richtext.facet#link', uri }]
+				};
+				facets.push(linkFacet);
 			}
 			const hashtagRegex = /#[\w\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+/g;
 			while ((match = hashtagRegex.exec(text)) !== null) {
@@ -480,51 +532,55 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				if (countGraphemes(tagWithoutHash) > 64) continue;
 				const byteStart = encoder.encode(text.slice(0, match.index)).length;
 				const byteEnd = byteStart + encoder.encode(tag).length;
-				facets.push({ index: { byteStart, byteEnd }, features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }] });
+				const tagFacet: TagFacet = {
+					index: { byteStart, byteEnd },
+					features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }]
+				};
+				facets.push(tagFacet);
 			}
 			facets.sort((a, b) => a.index.byteStart - b.index.byteStart);
 			return facets.length > 0 ? facets : undefined;
 		}
 	
-		async uploadBlob(blob: ArrayBuffer, mimeType: string, retried: boolean = false): Promise<any> {
+		async uploadBlob(blob: ArrayBuffer, mimeType: string, retried = false): Promise<UploadBlobResponse> {
 			if (!this.accessJwt) {
 				if (!(await this.login())) throw new Error('ログインに失敗しました');
 			}
-			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
 			try {
-				const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', {
+				const response = await this.requestWithTimeout({
+					url: 'https://bsky.social/xrpc/com.atproto.repo.uploadBlob',
 					method: 'POST',
 					headers: {
 						'Content-Type': mimeType,
-						'Accept': 'application/json',
-						'Authorization': `Bearer ${this.accessJwt}`
+						Accept: 'application/json',
+						Authorization: `Bearer ${this.accessJwt}`
 					},
-					body: blob,
-					signal: controller.signal
+					body: blob
 				});
-				if (!response.ok) {
-					if (response.status === 401 && !retried && (await this.login())) return this.uploadBlob(blob, mimeType, true);
-					if (response.status === 429 && !retried) {
-						const retryAfter = Number(response.headers.get('retry-after'));
-						const backoffMs = Number.isFinite(retryAfter) ? Math.max(500, retryAfter * 1000) : 1500;
-						await new Promise(r => setTimeout(r, backoffMs));
+				if (!this.isSuccessStatus(response.status)) {
+					if (response.status === 401 && !retried && (await this.login())) {
 						return this.uploadBlob(blob, mimeType, true);
 					}
-					const errorBody = await response.json().catch(() => ({}));
-					const message = (errorBody && (errorBody.message || errorBody.error)) || `画像アップロードに失敗しました: ${response.status}`;
+					if (response.status === 429 && !retried) {
+						const retryAfter = Number(response.headers['retry-after']);
+						const backoffMs = Number.isFinite(retryAfter) ? Math.max(500, retryAfter * 1000) : 1500;
+						await new Promise((resolve) => setTimeout(resolve, backoffMs));
+						return this.uploadBlob(blob, mimeType, true);
+					}
+					const errorBody = (response.json as { message?: string; error?: string }) ?? {};
+					const message = errorBody.message || errorBody.error || `画像アップロードに失敗しました: ${response.status}`;
 					throw new Error(message);
 				}
-				return await response.json();
-			} catch (e: any) {
-				if (e?.name === 'AbortError') throw new Error('画像アップロードがタイムアウトしました');
-				throw e;
-			} finally {
-				clearTimeout(timeout);
+				return response.json as UploadBlobResponse;
+			} catch (error) {
+				if (error instanceof Error && error.message === 'Request timed out') {
+					throw new Error('画像アップロードがタイムアウトしました');
+				}
+				throw error;
 			}
 		}
-	
-		async postToBluesky(text: string, embed?: Embed, retried: boolean = false): Promise<boolean> {
+
+		async postToBluesky(text: string, embed?: Embed, retried = false): Promise<boolean> {
 			if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) {
 				new Notice(this.getLocale().postContentEmpty);
 				return false;
@@ -536,7 +592,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			if (!this.accessJwt || !this.did) {
 				if (!(await this.login())) return false;
 			}
-			const record: any = {
+			const record: BlueskyPostRecord = {
 				text,
 				createdAt: new Date().toISOString(),
 				$type: 'app.bsky.feed.post'
@@ -544,41 +600,39 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			const facets = this.detectFacets(text);
 			if (facets) record.facets = facets;
 			if (embed) record.embed = embed;
-			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), this.settings.networkTimeoutMs ?? 15000);
 			try {
-				const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
+				const response = await this.requestWithTimeout({
+					url: 'https://bsky.social/xrpc/com.atproto.repo.createRecord',
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						'Authorization': `Bearer ${this.accessJwt}`
+						Authorization: `Bearer ${this.accessJwt}`
 					},
 					body: JSON.stringify({
 						repo: this.did,
 						collection: 'app.bsky.feed.post',
 						record
-					}),
-					signal: controller.signal
+					})
 				});
-				if (!response.ok) {
+				if (!this.isSuccessStatus(response.status)) {
 					if (response.status === 401 && !retried && (await this.login())) {
 						return this.postToBluesky(text, embed, true);
 					}
-					const errorBody = await response.json().catch(() => ({}));
-					const message = (errorBody && (errorBody.message || errorBody.error)) || `${this.getLocale().postFailed}: ${response.status}`;
+					const errorBody = (response.json as { message?: string; error?: string }) ?? {};
+					const message = errorBody.message || errorBody.error || `${this.getLocale().postFailed}: ${response.status}`;
 					throw new Error(message);
 				}
 				new Notice(this.getLocale().postSuccess);
 				return true;
-			} catch (e: any) {
-				if (e?.name === 'AbortError') {
+			} catch (error) {
+				const isTimeout = error instanceof Error && error.message === 'Request timed out';
+				if (isTimeout) {
 					new Notice(this.getLocale().postTimeout);
 				} else {
-					new Notice(`${this.getLocale().postFailed}: ${e.message || e}`);
+					const message = error instanceof Error ? error.message : String(error);
+					new Notice(`${this.getLocale().postFailed}: ${message}`);
 				}
 				return false;
-			} finally {
-				clearTimeout(timeout);
 			}
 		}
 
@@ -590,7 +644,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			const initial = '';
 			// 予備ログイン（失敗しても無視）
 			if (!this.accessJwt) {
-				this.login().catch(() => {});
+				void this.login().catch(() => {});
 			}
 			new PostModal(this.app, this, initial).open();
 		}
@@ -598,25 +652,25 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 
 class PostModal extends Modal {
 	plugin: BlueskyPlugin;
-	initialText: string = '';
+	initialText = '';
 	postButton!: ButtonComponent;
 	textArea!: HTMLTextAreaElement;
 	linkPreviewContainer!: HTMLElement;
 	imagePreviewContainer!: HTMLElement;
-	emojiPickerContainer!: HTMLElement;
+	emojiPickerContainer: HTMLElement | null = null;
 	emojiButtonEl!: HTMLElement; // 絵文字ボタン参照
 	charCountEl!: HTMLElement;
 	fileInput!: HTMLInputElement;
 	selectedImages: File[] = [];
 	linkPreviewData: LinkPreviewData | null = null;
 	pendingLinkPreviewUrl: string | null = null;
-	debounceTimer: ReturnType<typeof setTimeout> | null = null;
-	isEmojiPickerVisible: boolean = false;
+	debounceTimer: number | null = null;
+	isEmojiPickerVisible = false;
 	outsideClickHandler?: (e: MouseEvent) => void;
 	private repositionEmojiPickerBound?: () => void;
-	private keyHandler: (e: KeyboardEvent) => void;
+	private keyHandler: ((e: KeyboardEvent) => void) | null = null;
 
-	constructor(app: App, plugin: BlueskyPlugin, initialText: string = '') {
+	constructor(app: App, plugin: BlueskyPlugin, initialText = '') {
 		super(app);
 		this.plugin = plugin;
 		this.initialText = initialText;
@@ -642,11 +696,10 @@ class PostModal extends Modal {
 	private initExternalEmojiPicker(): void {
 		if (!this.emojiPickerContainer) {
 			this.emojiPickerContainer = document.createElement('div');
-			this.emojiPickerContainer.className = 'bluesky-emoji-picker-container bluesky-emoji-floating';
-			this.emojiPickerContainer.style.display = 'none';
+			this.emojiPickerContainer.className = 'bluesky-emoji-picker-container bluesky-emoji-floating bluesky-hidden';
 			document.body.appendChild(this.emojiPickerContainer);
 		}
-		this.emojiPickerContainer.innerHTML = '';
+		this.emojiPickerContainer.replaceChildren();
 		const grid = document.createElement('div');
 		grid.className = 'bluesky-emoji-grid';
 		EMOJI_LIST.forEach(em => {
@@ -660,7 +713,7 @@ class PostModal extends Modal {
 	}
 
 	private repositionEmojiPicker() {
-		if (!this.emojiPickerContainer || !this.emojiButtonEl || this.emojiPickerContainer.style.display === 'none') return;
+		if (!this.emojiPickerContainer || !this.emojiButtonEl || this.emojiPickerContainer.classList.contains('bluesky-hidden')) return;
 		const rect = this.emojiButtonEl.getBoundingClientRect();
 		const picker = this.emojiPickerContainer;
 		const width = picker.offsetWidth || 300;
@@ -728,7 +781,7 @@ class PostModal extends Modal {
 		const footerRowEl = footerEl.createDiv({ cls: 'bluesky-footer-row' });
 		const actionsEl = footerRowEl.createDiv({ cls: 'bluesky-actions' });
 
-		this.fileInput = contentEl.createEl('input', { attr: { type: 'file', accept: 'image/*', style: 'display: none;' } });
+		this.fileInput = contentEl.createEl('input', { cls: 'bluesky-hidden', attr: { type: 'file', accept: 'image/*' } });
 		this.fileInput.multiple = true;
 		this.fileInput.onchange = (e) => this.handleFileSelect(e);
 
@@ -751,15 +804,13 @@ class PostModal extends Modal {
 
 		// ヘルプテキストを次の行に配置
 		const helpEl = footerEl.createDiv({ cls: 'bluesky-hotkey-help' });
-		helpEl.innerHTML = `
-			<small>
-				<strong>${this.plugin.getLocale().hotkeys}:</strong>
-				${this.plugin.settings.hotkeys.cancel}: ${this.plugin.getLocale().cancel} |
-				${this.plugin.settings.hotkeys.post}: ${this.plugin.getLocale().post} |
-				${this.plugin.settings.hotkeys.addImage}: ${this.plugin.getLocale().addImage} |
-				${this.plugin.settings.hotkeys.emoji}: ${this.plugin.getLocale().addEmoji}
-			</small>
-		`;
+		const helpSmall = helpEl.createEl('small');
+		helpSmall.createEl('strong', { text: `${this.plugin.getLocale().hotkeys}:` });
+		const hotkeyText = ` ${this.plugin.settings.hotkeys.cancel}: ${this.plugin.getLocale().cancel} | ` +
+			`${this.plugin.settings.hotkeys.post}: ${this.plugin.getLocale().post} | ` +
+			`${this.plugin.settings.hotkeys.addImage}: ${this.plugin.getLocale().addImage} | ` +
+			`${this.plugin.settings.hotkeys.emoji}: ${this.plugin.getLocale().addEmoji}`;
+		helpSmall.appendText(hotkeyText);
 
 		this.initExternalEmojiPicker();
 		this.textArea.addEventListener('input', () => { this.updateCharCount(); });
@@ -769,7 +820,7 @@ class PostModal extends Modal {
 
 	showEmojiPicker(): void {
 		if (!this.emojiPickerContainer) this.initExternalEmojiPicker();
-		this.emojiPickerContainer.style.display = 'block';
+		this.emojiPickerContainer?.classList.remove('bluesky-hidden');
 		this.isEmojiPickerVisible = true;
 		this.repositionEmojiPicker();
 		this.outsideClickHandler = (e: MouseEvent) => {
@@ -786,7 +837,7 @@ class PostModal extends Modal {
 
 	hideEmojiPicker(): void {
 		if (!this.emojiPickerContainer) return;
-		this.emojiPickerContainer.style.display = 'none';
+		this.emojiPickerContainer.classList.add('bluesky-hidden');
 		this.isEmojiPickerVisible = false;
 		if (this.outsideClickHandler) document.removeEventListener('mousedown', this.outsideClickHandler);
 		if (this.repositionEmojiPickerBound) {
@@ -813,7 +864,7 @@ class PostModal extends Modal {
 		try {
 			if (this.emojiPickerContainer && this.emojiPickerContainer.parentElement) {
 				this.emojiPickerContainer.remove();
-				this.emojiPickerContainer = null as any; // 後続誤参照防止
+				this.emojiPickerContainer = null; // 後続誤参照防止
 			}
 		} catch (err) {
 			console.error('[Post-To-Bluesky] Failed to remove emoji picker container:', err);
@@ -824,7 +875,7 @@ class PostModal extends Modal {
 	handleKeyboard(e: KeyboardEvent) {
 		const settings = this.plugin.settings.hotkeys;
 		// IME変換中はショートカットを無視
-		if ((e as any).isComposing) return;
+		if (e.isComposing) return;
 
 		// キャンセル（Escape）
 		if (this.matchesHotkey(e, settings.cancel)) {
@@ -863,7 +914,7 @@ class PostModal extends Modal {
 		const parts = hotkey.toLowerCase().split('+');
 		const key = parts[parts.length - 1];
 		const rawMods = parts.slice(0, -1);
-		const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
+		const isMac = Platform.isMacOS;
 		const modifiers = rawMods.map(m => (m === 'mod' ? (isMac ? 'meta' : 'ctrl') : m));
 
 		// キーの一致確認
@@ -953,7 +1004,7 @@ class PostModal extends Modal {
 				this.updateImagePreviews();
 				if (this.selectedImages.length === 0) {
 					// 画像が空ならリンクプレビューを再評価
-					this.updateLinkPreview();
+					void this.updateLinkPreview();
 				}
 			};
 		});
@@ -969,13 +1020,15 @@ class PostModal extends Modal {
 
 	debounceUpdatePreviews() {
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
-		this.debounceTimer = setTimeout(() => this.updateLinkPreview(), 500);
+		this.debounceTimer = window.setTimeout(() => {
+			void this.updateLinkPreview();
+		}, 500);
 	}
 
 	async updateLinkPreview() {
 		if (this.selectedImages.length > 0) return;
-		const match = this.textArea.value.match(/https?:\/\/[^\s<>()\[\]{}"']+/);
-		const url = match ? match[0].replace(/[.,!?)\]\}]+$/, '') : null;
+		const match = this.textArea.value.match(/https?:\/\/[^\s<>()\]{}"']+/);
+		const url = match ? match[0].replace(/[\])}.,!?]+$/, '') : null;
 		if (url && url === this.linkPreviewData?.url) return;
 		this.linkPreviewContainer.empty();
 		this.linkPreviewData = null;
@@ -1117,9 +1170,12 @@ class PostModal extends Modal {
 		}
 	}
 
-	onClose() {
-		// キーボードイベントリスナーを削除
-		document.removeEventListener('keydown', this.keyHandler);
+		onClose() {
+			// キーボードイベントリスナーを削除
+			if (this.keyHandler) {
+				document.removeEventListener('keydown', this.keyHandler);
+				this.keyHandler = null;
+			}
 
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
@@ -1129,7 +1185,9 @@ class PostModal extends Modal {
 				const src = (el as HTMLImageElement).src;
 				if (src?.startsWith('blob:')) URL.revokeObjectURL(src);
 			});
-		} catch {}
+		} catch (error) {
+			console.debug('[Post-To-Bluesky] Failed to release preview blobs', error);
+		}
 		this.contentEl.empty();
 	}
 }
@@ -1140,11 +1198,13 @@ class BlueskySettingTab extends PluginSettingTab {
 	
 	constructor(app: App, plugin: BlueskyPlugin) { super(app, plugin); this.plugin = plugin; }
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
+		display(): void {
+			const { containerEl } = this;
+			containerEl.empty();
 
-		containerEl.createEl('h2', { text: this.plugin.getLocale().settingsTitle });
+			new Setting(containerEl)
+				.setHeading()
+				.setName(this.plugin.getLocale().settingsTitle);
 
 		new Setting(containerEl)
 			.setName(this.plugin.getLocale().handleLabel)
@@ -1196,8 +1256,10 @@ class BlueskySettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		// 言語設定セクション
-		containerEl.createEl('h3', { text: this.plugin.getLocale().languageSettingsTitle });
+			// 言語設定セクション
+			new Setting(containerEl)
+				.setHeading()
+				.setName(this.plugin.getLocale().languageSettingsTitle);
 		
 		new Setting(containerEl)
 			.setName(this.plugin.getLocale().languageLabel)
@@ -1215,8 +1277,10 @@ class BlueskySettingTab extends PluginSettingTab {
 					this.display();
 				}));
 
-		// ホットキー設定セクション
-		containerEl.createEl('h3', { text: this.plugin.getLocale().hotkeysTitle });
+			// ホットキー設定セクション
+			new Setting(containerEl)
+				.setHeading()
+				.setName(this.plugin.getLocale().hotkeysTitle);
 
 		new Setting(containerEl)
 			.setName(this.plugin.getLocale().cancelHotkeyLabel)
@@ -1299,7 +1363,7 @@ class BlueskySettingTab extends PluginSettingTab {
 		if (!hotkey || !hotkey.trim()) return '';
 		
 		// 小文字に変換して空白を除去
-		let normalized = hotkey.toLowerCase().trim();
+		const normalized = hotkey.toLowerCase().trim();
 		
 		// 修飾子の別名を標準名にマッピング
 		const modifierAliases: Record<string, string> = {
@@ -1376,7 +1440,8 @@ class BlueskySettingTab extends PluginSettingTab {
 	 * ホットキー衝突をチェックして警告を表示
 	 */
 	private checkHotkeyConflicts(): void {
-		if (!this.conflictWarningEl) return;
+		const warningContainer = this.conflictWarningEl;
+		if (!warningContainer) return;
 
 		const allHotkeys = [
 			this.plugin.settings.hotkeys.cancel,
@@ -1413,12 +1478,17 @@ class BlueskySettingTab extends PluginSettingTab {
 		}
 
 		// 警告を表示または非表示
-		if (warningMessage) {
-			this.conflictWarningEl.innerHTML = warningMessage.replace(/\n/g, '<br>');
-			this.conflictWarningEl.className = `hotkey-conflict-warning ${warningClass}`;
-			this.conflictWarningEl.style.display = 'block';
-		} else {
-			this.conflictWarningEl.style.display = 'none';
+		const isError = warningClass === 'hotkey-conflict-error';
+		const lines = warningMessage.split('\n').filter(Boolean);
+		warningContainer.replaceChildren();
+		if (lines.length > 0) {
+			lines.forEach((line) => {
+				const paragraph = document.createElement('div');
+				paragraph.textContent = line;
+				warningContainer.appendChild(paragraph);
+			});
 		}
+		warningContainer.classList.toggle('hotkey-conflict-error', isError);
+		warningContainer.classList.toggle('is-visible', lines.length > 0);
 	}
 }

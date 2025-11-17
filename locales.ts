@@ -250,7 +250,7 @@ export const en: LocaleStrings = {
   postTimeout: 'Post timed out',
   
   // 設定画面
-  settingsTitle: 'Obsidian to Bluesky Settings',
+  settingsTitle: 'Bluesky settings',
   handleLabel: 'Bluesky Handle',
   handleDesc: 'Your Bluesky handle (e.g., username.bsky.social)',
   passwordLabel: 'App Password',
@@ -259,7 +259,7 @@ export const en: LocaleStrings = {
   timeoutDesc: 'Bluesky API call timeout (milliseconds)',
   hashtagsLabel: 'Default Hashtags',
   hashtagsDesc: 'Hashtags to automatically add to posts (separated by newlines)',
-  hotkeysTitle: 'Hotkey Settings',
+  hotkeysTitle: 'Hotkey settings',
   cancelHotkeyLabel: 'Cancel Hotkey',
   cancelHotkeyDesc: 'Key to close modal (default: Escape)',
   postHotkeyLabel: 'Post Hotkey',
@@ -301,7 +301,7 @@ export const en: LocaleStrings = {
   hotkeys: 'Hotkeys',
   
   // 言語設定
-  languageSettingsTitle: 'Language Settings',
+  languageSettingsTitle: 'Language settings',
   languageLabel: 'Interface Language',
   languageDesc: 'Select the interface language for the plugin. Auto setting follows Obsidian\'s language configuration.',
   languageAuto: 'Auto (follow Obsidian language)',

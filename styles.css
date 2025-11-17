@@ -135,6 +135,10 @@
   border-top: 1px solid var(--background-modifier-border);
 }
 
+.bluesky-hidden {
+  display: none !important;
+}
+
 /* Layout adjustment inside footer */
 .bluesky-actions {
   display: flex;
@@ -303,10 +307,14 @@
 	border-radius: 5px;
 	font-size: 14px;
 	line-height: 1.4;
-	display: none;
+  display: none;
 	background-color: #fff3cd;
 	border: 1px solid #ffeaa7;
 	color: #856404;
+}
+
+.hotkey-conflict-warning.is-visible {
+  display: block;
 }
 
 .hotkey-conflict-warning.hotkey-conflict-error {

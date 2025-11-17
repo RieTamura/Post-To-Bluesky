@@ -1,5 +1,5 @@
 // hotkeyConflictDetector.ts - ホットキー衝突検出機能
-import { getCurrentLocale, ja, en } from './locales';
+import { ja, en } from './locales';
 import type { LocaleStrings } from './locales';
 
 export interface HotkeyConflict {
@@ -185,7 +185,6 @@ export class HotkeyConflictDetector {
    */
   static detectConflicts(hotkey: string): HotkeyConflict[] {
     const conflicts: HotkeyConflict[] = [];
-    const parsed = this.parseHotkey(hotkey);
     
     // ブラウザショートカットとの衝突チェック
     for (const shortcut of this.BROWSER_SHORTCUTS) {
@@ -288,9 +287,11 @@ export class HotkeyConflictDetector {
   static generateConflictDescription(conflicts: HotkeyConflict[], locale?: string): string {
     if (conflicts.length === 0) return '';
     
-    // ロケールを取得（指定されていない場合は現在のロケールを使用）
-    const currentLocale = String(locale ?? getCurrentLocale() ?? '').toLowerCase().startsWith('ja') ? 'ja' : 'en';
-    const localeStrings = currentLocale === 'ja' ? ja : en;
+    // ロケールを取得（指定されていない場合はブラウザ設定を使用）
+    const browserLocale = typeof navigator !== 'undefined' ? navigator.language : 'en';
+    const localeTag = (locale ?? browserLocale ?? 'en').toLowerCase();
+    const currentLocale = localeTag.startsWith('ja') ? 'ja' : 'en';
+    const localeStrings: LocaleStrings = currentLocale === 'ja' ? ja : en;
     
     const browserConflicts = conflicts.filter(c => c.type === 'browser');
     const osConflicts = conflicts.filter(c => c.type === 'os');
