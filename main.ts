@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, Platform } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -100,30 +100,13 @@ interface BlueskyPluginSettings {
 	password: string;
 	networkTimeoutMs: number;
 	defaultHashtags: string;
-	forceLanguage?: 'en' | 'ja';
-	detectedLanguage?: string; // 後方互換
-	hotkeys: {
-		cancel: string;
-		post: string;
-		addImage: string;
-		emoji: string;
-	};
-	language?: string; // 旧フィールド後方互換
 }
 
 const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	handle: '',
 	password: '',
 	networkTimeoutMs: 15000,
-	defaultHashtags: '',
-	forceLanguage: 'en',
-	hotkeys: {
-		cancel: 'Escape',
-		post: 'Mod+Enter',
-		addImage: 'Mod+I',
-		emoji: 'Mod+E'
-	},
-	language: 'en'
+	defaultHashtags: ''
 };
 
 // Bluesky API embed 関連型（復元）
@@ -190,47 +173,8 @@ interface CreateSessionResponse {
 
 type HttpError = Error & { status?: number; response?: RequestUrlResponse };
 
-type ObsidianLanguageConfig = {
-	language?: string;
-	app?: { language?: string };
-	settings?: { language?: string };
-};
 // ---- End added types ----
 
-// ---- Added hotkey conflict detection types (fix for missing HotkeyConflict) ----
-interface HotkeyConflict {
-	hotkey: string;
-	description: string;
-	severity: 'warning' | 'error';
-}
-
-class HotkeyConflictDetector {
-	private static reserved: { pattern: RegExp; description: string; severity: 'warning' | 'error' }[] = [
-		{ pattern: /^ctrl\+w$/i, description: 'Browser tab close', severity: 'warning' },
-		{ pattern: /^ctrl\+r$/i, description: 'Browser reload', severity: 'warning' },
-		{ pattern: /^ctrl\+shift\+i$/i, description: 'Browser developer tools', severity: 'warning' },
-		{ pattern: /^meta\+w$/i, description: 'Close window/tab (macOS)', severity: 'warning' },
-		{ pattern: /^meta\+q$/i, description: 'Quit application (macOS)', severity: 'error' }
-	];
-
-	private static normalize(h: string): string {
-		return h.toLowerCase().replace(/\s+/g, '');
-	}
-
-	static detectConflicts(hotkey: string): HotkeyConflict[] {
-		if (!hotkey) return [];
-		const norm = this.normalize(hotkey);
-		const matches = this.reserved.filter(r => r.pattern.test(norm));
-		return matches.map(m => ({ hotkey, description: m.description, severity: m.severity }));
-	}
-
-	static generateConflictDescription(conflicts: HotkeyConflict[]): string {
-		if (!conflicts.length) return '';
-		const lines = conflicts.map(c => `${c.hotkey}: ${c.description}`);
-		return lines.join('<br>');
-	}
-}
-// ---- End added hotkey conflict detection types ----
 
 function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 	// Example implementation, adjust as needed
@@ -364,7 +308,6 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		refreshJwt: string | undefined;
 		did: string | undefined;
 		userAvatar: string | undefined;
-		languageIntervalId: number | null = null;
 	
 	async onload() {
 		await this.loadSettings();
@@ -385,29 +328,9 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 	onunload(): void {}
 
 	async loadSettings() {
-			const loaded = await this.loadData();
-			if (loaded && typeof loaded.language === 'string') {
-				const originalLang = loaded.language.trim();
-				try {
-					const intlApi = Intl as IntlWithOptionalApis;
-					const canonical = typeof intlApi.getCanonicalLocales === 'function'
-						? intlApi.getCanonicalLocales(originalLang)
-						: [];
-					if (Array.isArray(canonical) && canonical.length > 0) {
-						const primary = String(canonical[0]).split('-')[0];
-						if (primary) {
-							loaded.language = primary;
-						}
-					}
-				} catch {
-					loaded.language = originalLang;
-				}
-			}
-			if (loaded && typeof loaded.detectedLanguage === 'undefined' && typeof loaded.language === 'string') {
-				loaded.detectedLanguage = loaded.language;
-			}
-			this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
-		}
+		const loaded = await this.loadData();
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+	}
 
 		async saveSettings() {
 			try {
@@ -417,42 +340,13 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			}
 		}
 	
-		private setupLanguagePolling() {
-			// 自動検出機能は削除したため、既存のポーリングは必ず停止する
-			if (this.languageIntervalId !== null) {
-				window.clearInterval(this.languageIntervalId);
-				this.languageIntervalId = null;
-			}
-		}
-	
-		private async readObsidianConfig(): Promise<string | null> {
-			const adapter = this.app.vault?.adapter;
-			if (!adapter) return null;
-			const configDir = this.app.vault.configDir;
-			const candidates = ['app.json', 'config.json', 'settings.json'].map((name) => `${configDir}/${name}`);
-			for (const configPath of candidates) {
-				try {
-					const configContent = await adapter.read(configPath);
-					const parsed = JSON.parse(configContent) as ObsidianLanguageConfig;
-					const detected = parsed.language ?? parsed.app?.language ?? parsed.settings?.language;
-					if (typeof detected === 'string') {
-						return detected;
-					}
-				} catch (error) {
-					console.debug('[Post-To-Bluesky] Unable to read config file', configPath, error);
-				}
-			}
-			return null;
-		}
-	
 		public async updateLanguageSettings() {
-			// 直接 forceLanguage を使用（'en' または 'ja' のみ）
-			this.setupLanguagePolling();
 			try {
-				const finalLanguage = this.settings.forceLanguage || 'en';
-				this.currentLocale = getLocaleByObsidianLanguage(finalLanguage);
-				await this.saveSettings();
+				// Use Obsidian's moment locale (reflects user's language setting)
+				const obsidianLang = (window as any).moment?.locale() || 'en';
+				this.currentLocale = getLocaleByObsidianLanguage(obsidianLang);
 			} catch {
+				// Fallback to English if language detection fails
 				this.currentLocale = getLocaleByObsidianLanguage('en');
 			}
 		}
@@ -756,7 +650,6 @@ class PostModal extends Modal {
 	isEmojiPickerVisible = false;
 	outsideClickHandler?: (e: MouseEvent) => void;
 	private repositionEmojiPickerBound?: () => void;
-	private keyHandler: ((e: KeyboardEvent) => void) | null = null;
 
 	constructor(app: App, plugin: BlueskyPlugin, initialText = '') {
 		super(app);
@@ -810,11 +703,6 @@ class PostModal extends Modal {
 		contentEl.empty();
 		contentEl.addClass('bluesky-modal-container');
 
-		// キーボードイベントハンドラーを生成
-		this.keyHandler = (e: KeyboardEvent): void => this.handleKeyboard(e);
-		// キーボードイベントリスナーを追加
-		document.addEventListener('keydown', this.keyHandler);
-
 		const headerEl = contentEl.createDiv({ cls: 'bluesky-modal-header' });
 
 		// キャンセルボタン
@@ -862,36 +750,22 @@ class PostModal extends Modal {
 		this.fileInput.multiple = true;
 		this.fileInput.onchange = (e) => this.handleFileSelect(e);
 
-		// ホットキー表示付きの画像追加ボタン
+		// 画像追加ボタン
 		new ButtonComponent(actionsEl)
 			.setIcon('image-file')
-			.setTooltip(`${this.plugin.getLocale().addImage} (最大4枚) - ${this.plugin.settings.hotkeys.addImage}`)
+			.setTooltip(`${this.plugin.getLocale().addImage} (最大4枚)`)
 			.onClick(() => this.fileInput.click());
 
 		// 絵文字ボタンのみ（ピッカー本体は body 直下に生成）
 		const emojiWrapper = actionsEl.createDiv({ cls: 'bluesky-emoji-wrapper' });
 		const emojiBtn = new ButtonComponent(emojiWrapper)
 			.setIcon('smile')
-			.setTooltip(`${this.plugin.getLocale().addEmoji} - ${this.plugin.settings.hotkeys.emoji}`)
+			.setTooltip(this.plugin.getLocale().addEmoji)
 			.onClick(() => this.toggleEmojiPicker());
 		this.emojiButtonEl = emojiBtn.buttonEl;
 
 		// 文字カウンターを右端に配置
 		this.charCountEl = footerRowEl.createDiv({ cls: 'bluesky-char-count' });
-
-		// ヘルプテキストを次の行に配置
-		const helpEl = footerEl.createDiv({ cls: 'bluesky-hotkey-help' });
-		const helpSmall = helpEl.createEl('small');
-		helpSmall.createEl('strong', { text: `${this.plugin.getLocale().hotkeys}:` });
-		const locale = this.plugin.getLocale();
-		const hotkeys = this.plugin.settings.hotkeys;
-		const hotkeySegments = [
-			`${hotkeys.cancel}: ${locale.cancel}`,
-			`${hotkeys.post}: ${locale.post}`,
-			`${hotkeys.addImage}: ${locale.addImage}`,
-			`${hotkeys.emoji}: ${locale.addEmoji}`
-		];
-		helpSmall.appendText(` ${hotkeySegments.join(' | ')}`);
 
 		this.initExternalEmojiPicker();
 		this.textArea.addEventListener('input', () => { this.updateCharCount(); });
@@ -920,10 +794,15 @@ class PostModal extends Modal {
 		if (!this.emojiPickerContainer) return;
 		this.emojiPickerContainer.classList.add('bluesky-hidden');
 		this.isEmojiPickerVisible = false;
-		if (this.outsideClickHandler) document.removeEventListener('mousedown', this.outsideClickHandler);
+		// Clean up event listeners
+		if (this.outsideClickHandler) {
+			document.removeEventListener('mousedown', this.outsideClickHandler);
+			this.outsideClickHandler = undefined;
+		}
 		if (this.repositionEmojiPickerBound) {
 			window.removeEventListener('resize', this.repositionEmojiPickerBound);
 			window.removeEventListener('scroll', this.repositionEmojiPickerBound, true);
+			this.repositionEmojiPickerBound = undefined;
 		}
 	}
 
@@ -953,89 +832,6 @@ class PostModal extends Modal {
 	}
 
 	// キーボードイベントハンドラー
-	handleKeyboard(e: KeyboardEvent) {
-		const settings = this.plugin.settings.hotkeys;
-		// IME変換中はショートカットを無視
-		if (e.isComposing) return;
-
-		// キャンセル（Escape）
-		if (this.matchesHotkey(e, settings.cancel)) {
-			e.preventDefault();
-			this.close();
-			return;
-		}
-
-		// 投稿（Ctrl+Enter）
-		if (this.matchesHotkey(e, settings.post)) {
-			e.preventDefault();
-			if (!this.postButton.disabled) {
-				void this.handlePost();
-			}
-			return;
-		}
-
-		// 絵文字追加（Ctrl+E）
-		if (this.matchesHotkey(e, settings.emoji)) {
-			e.preventDefault();
-			this.toggleEmojiPicker();
-			return;
-		}
-
-		// 画像追加（Ctrl+I）
-		if (this.matchesHotkey(e, settings.addImage)) {
-			e.preventDefault();
-			e.stopPropagation();
-			this.fileInput?.click();
-			return;
-		}
-	}
-
-	// ホットキーのマッチング関数
-	matchesHotkey(e: KeyboardEvent, hotkey: string): boolean {
-		const parts = hotkey.toLowerCase().split('+');
-		const key = parts[parts.length - 1];
-		const rawMods = parts.slice(0, -1);
-		const isMac = Platform.isMacOS;
-		const modifiers = rawMods.map(m => (m === 'mod' ? (isMac ? 'meta' : 'ctrl') : m));
-
-		// キーの一致確認
-		let keyMatches = false;
-		if (key === 'escape' && e.key === 'Escape') keyMatches = true;
-		else if (key === 'enter' && e.key === 'Enter') keyMatches = true;
-		else if (key === e.key.toLowerCase()) keyMatches = true;
-
-		if (!keyMatches) return false;
-
-		// 修飾キーの確認
-		for (const modifier of modifiers) {
-			switch (modifier) {
-				case 'ctrl':
-					if (!e.ctrlKey) return false;
-					break;
-				case 'shift':
-					if (!e.shiftKey) return false;
-					break;
-				case 'alt':
-					if (!e.altKey) return false;
-					break;
-				case 'meta':
-					if (!e.metaKey) return false;
-					break;
-			}
-		}
-
-		// 不要な修飾キーがないかチェック
-		const expectedCtrl = modifiers.includes('ctrl');
-		const expectedShift = modifiers.includes('shift');
-		const expectedAlt = modifiers.includes('alt');
-		const expectedMeta = modifiers.includes('meta');
-
-		return e.ctrlKey === expectedCtrl &&
-			e.shiftKey === expectedShift &&
-			e.altKey === expectedAlt &&
-			e.metaKey === expectedMeta;
-	}
-
 	handleFileSelect(event: Event) {
 		const files = (event.target as HTMLInputElement).files;
 		if (!files) return;
@@ -1250,12 +1046,6 @@ class PostModal extends Modal {
 	}
 
 		onClose() {
-			// キーボードイベントリスナーを削除
-			if (this.keyHandler) {
-				document.removeEventListener('keydown', this.keyHandler);
-				this.keyHandler = null;
-			}
-
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
 		// 画像プレビューの blob URL を解放
@@ -1273,8 +1063,7 @@ class PostModal extends Modal {
 
 class BlueskySettingTab extends PluginSettingTab {
 	plugin: BlueskyPlugin;
-	private conflictWarningEl: HTMLElement | null = null;
-	
+
 	constructor(app: App, plugin: BlueskyPlugin) { super(app, plugin); this.plugin = plugin; }
 
 	display(): void {
@@ -1335,239 +1124,5 @@ class BlueskySettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		// 言語設定セクション
-		new Setting(containerEl)
-			.setHeading()
-			.setName(this.plugin.getLocale().languageSettingsTitle);
-		
-		new Setting(containerEl)
-			.setName(this.plugin.getLocale().languageLabel)
-			.setDesc(this.plugin.getLocale().languageDesc)
-			.addDropdown(dropdown => dropdown
-				.addOption('en', this.plugin.getLocale().languageEnglish)
-				.addOption('ja', this.plugin.getLocale().languageJapanese)
-				.setValue(this.plugin.settings.forceLanguage || 'en')
-				.onChange(async (value) => {
-					this.plugin.settings.forceLanguage = value as 'en' | 'ja';
-					await this.plugin.saveSettings();
-					// 言語設定を即座に更新
-					await this.plugin.updateLanguageSettings();
-					// 設定画面を再描画して言語を反映
-					this.display();
-				}));
-
-		// ホットキー設定セクション
-		new Setting(containerEl)
-			.setHeading()
-			.setName(this.plugin.getLocale().hotkeysTitle);
-
-		new Setting(containerEl)
-			.setName(this.plugin.getLocale().cancelHotkeyLabel)
-			.setDesc(this.plugin.getLocale().cancelHotkeyDesc)
-			.addText(text => text
-				.setPlaceholder('Escape')
-				.setValue(this.plugin.settings.hotkeys.cancel)
-				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.cancel = value || 'Escape';
-					await this.plugin.saveSettings();
-					this.checkHotkeyConflicts();
-				}));
-
-		new Setting(containerEl)
-			.setName(this.plugin.getLocale().postHotkeyLabel)
-			.setDesc(this.plugin.getLocale().postHotkeyDesc)
-			.addText(text => text
-				.setPlaceholder('e.g., Ctrl+Enter')
-				.setValue(this.plugin.settings.hotkeys.post)
-				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.post = value || 'Mod+Enter';
-					await this.plugin.saveSettings();
-					this.checkHotkeyConflicts();
-				}));
-
-		new Setting(containerEl)
-			.setName(this.plugin.getLocale().imageHotkeyLabel)
-			.setDesc(this.plugin.getLocale().imageHotkeyDesc)
-			.addText(text => text
-				.setPlaceholder('e.g., Ctrl+I')
-				.setValue(this.plugin.settings.hotkeys.addImage)
-				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.addImage = value || 'Mod+I';
-					await this.plugin.saveSettings();
-					this.checkHotkeyConflicts();
-				}));
-
-		new Setting(containerEl)
-			.setName(this.plugin.getLocale().emojiHotkeyLabel)
-			.setDesc(this.plugin.getLocale().emojiHotkeyDesc)
-			.addText(text => text
-				.setPlaceholder('e.g., Ctrl+E')
-				.setValue(this.plugin.settings.hotkeys.emoji)
-				.onChange(async (value) => {
-					this.plugin.settings.hotkeys.emoji = value || 'Mod+E';
-					await this.plugin.saveSettings();
-					this.checkHotkeyConflicts();
-				}));
-
-		containerEl.createEl('p', {
-			text: this.plugin.getLocale().appPasswordNote,
-			cls: 'setting-item-description'
-		});
-
-		containerEl.createEl('p', {
-			text: this.plugin.getLocale().hotkeyFormatNote,
-			cls: 'setting-item-description'
-		});
-
-		containerEl.createEl('p', {
-			text: this.plugin.getLocale().hotkeyConflictNote,
-			cls: 'setting-item-description'
-		});
-
-		// ホットキー衝突警告を表示する要素を作成
-		this.conflictWarningEl = containerEl.createDiv({ cls: 'hotkey-conflict-warning' });
-		
-		// 初期状態でホットキー衝突をチェック
-		this.checkHotkeyConflicts();
-	}
-
-	/**
-	 * ホットキーを正規化する
-	 * - 小文字に変換
-	 * - 修飾子の別名を標準名にマッピング
-	 * - 修飾子を標準順序でソート
-	 * - 等価なホットキーを同じ文字列に正規化
-	 */
-	private normalizeHotkey(hotkey: string): string {
-		if (!hotkey || !hotkey.trim()) return '';
-		
-		// 小文字に変換して空白を除去
-		const lowercased = hotkey.toLowerCase().trim();
-		
-		// 修飾子の別名を標準名にマッピング
-		const modifierAliases: Record<string, string> = {
-			'cmd': 'meta',
-			'command': 'meta',
-			'control': 'ctrl',
-			'option': 'alt',
-			'windows': 'meta',
-			'win': 'meta',
-			'mod': (typeof process !== 'undefined' && process.platform === 'darwin') ? 'meta' : 'ctrl' // プラットフォームに応じてmodを動的にマッピング（macOS: meta、Windows/Linux: ctrl）
-		};
-		
-		// 修飾子の標準順序
-		const modifierOrder = ['ctrl', 'alt', 'shift', 'meta'];
-		
-		// 修飾子とメインキーを分離
-		const parts = lowercased.split(/[+\s]+/).filter(part => part.length > 0);
-		const modifiersSet = new Set<string>(); // 配列ではなくSetを使用して重複を効率的に除去
-		let mainKey = '';
-		
-		parts.forEach(part => {
-			// 修飾子の別名を標準名に変換
-			const standardModifier = modifierAliases[part] || part;
-			
-			// 修飾子かどうかを判定（標準順序に含まれるか、または別名から変換されたもの）
-			if (modifierOrder.includes(standardModifier)) {
-				modifiersSet.add(standardModifier); // Setに追加（自動的に重複除去）
-			} else {
-				// メインキー（修飾子でない場合）
-				mainKey = part;
-			}
-		});
-		
-		// 修飾子を標準順序でソート（Setから標準順序に従って選択）
-		const sortedModifiers = modifierOrder
-			.filter(modifier => modifiersSet.has(modifier)); // modifierOrderを反復して、Setに存在する修飾子を標準順序で選択
-		
-		// 正規化されたホットキーを構築
-		if (sortedModifiers.length > 0) {
-			return sortedModifiers.join('+') + '+' + mainKey;
-		} else {
-			return mainKey;
-		}
-	}
-
-	/**
-	 * 重複するホットキーを見つける
-	 */
-	private findDuplicateHotkeys(hotkeys: string[]): string[] {
-		const duplicatesSet = new Set<string>();
-		const seen = new Set<string>();
-
-		hotkeys.forEach(hotkey => {
-			// ホットキーを高度に正規化
-			const normalizedHotkey = this.normalizeHotkey(hotkey);
-			
-			// 空文字列の場合はスキップ
-			if (!normalizedHotkey) return;
-			
-			// 既に見た正規化ホットキーの場合、現在の元のホットキーを重複として追加
-			if (seen.has(normalizedHotkey)) {
-				duplicatesSet.add(hotkey);
-			}
-			
-			// 毎回正規化されたホットキーをseenセットに追加
-			seen.add(normalizedHotkey);
-		});
-
-		// Setを配列に変換して返す（各重複は1回だけ報告される）
-		return Array.from(duplicatesSet);
-	}
-
-	/**
-	 * ホットキー衝突をチェックして警告を表示
-	 */
-	private checkHotkeyConflicts(): void {
-		const warningContainer = this.conflictWarningEl;
-		if (!warningContainer) return;
-
-		const allHotkeys = [
-			this.plugin.settings.hotkeys.cancel,
-			this.plugin.settings.hotkeys.post,
-			this.plugin.settings.hotkeys.addImage,
-			this.plugin.settings.hotkeys.emoji
-		];
-
-		// 重複チェック
-		const duplicates = this.findDuplicateHotkeys(allHotkeys);
-		
-		// 既知のショートカットとの衝突チェック
-		const conflicts: HotkeyConflict[] = [];
-		allHotkeys.forEach(hotkey => {
-			conflicts.push(...HotkeyConflictDetector.detectConflicts(hotkey));
-		});
-
-		// 警告メッセージを生成
-		let warningMessage = '';
-		let warningClass = '';
-
-		if (duplicates.length > 0) {
-			warningMessage += `${this.plugin.getLocale().hotkeyConflictWarning}\n`;
-			warningMessage += `${this.plugin.getLocale().duplicateHotkeys}: ${duplicates.join(', ')}\n`;
-			warningClass = 'hotkey-conflict-error';
-		}
-
-		if (conflicts.length > 0) {
-			if (!warningMessage) {
-				warningMessage += `${this.plugin.getLocale().hotkeyConflictWarning}\n`;
-			}
-			warningMessage += HotkeyConflictDetector.generateConflictDescription(conflicts);
-			warningClass = warningClass || 'hotkey-conflict-warning';
-		}
-
-		// 警告を表示または非表示
-		const isError = warningClass === 'hotkey-conflict-error';
-		const lines = warningMessage.split('\n').filter(Boolean);
-		warningContainer.replaceChildren();
-		if (lines.length > 0) {
-			lines.forEach((line) => {
-				const paragraph = document.createElement('div');
-				paragraph.textContent = line;
-				warningContainer.appendChild(paragraph);
-			});
-		}
-		warningContainer.classList.toggle('hotkey-conflict-error', isError);
-		warningContainer.classList.toggle('is-visible', lines.length > 0);
 	}
 }
