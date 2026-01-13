@@ -43,5 +43,13 @@ Post to Bluesky with optional images & emoji.
 
 ---
 
+## Roadmap / ロードマップ
+
+- Mobile support / モバイル版対応
+- Thread support / スレッド対応
+- Obsidian Bases integration (save posts and hashtags) / Obsidian Bases対応（投稿文やハッシュタグを記録）
+
+---
+
 © 2025 RieTamura – [0BSD License](./LICENSE)
 
