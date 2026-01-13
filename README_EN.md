@@ -2,15 +2,13 @@
 
 Language: **English** | [日本語](./README_JA.md)
 
-This plugin lets you post from Obsidian to Bluesky. You can post selected text, the entire note, or create a new post via a modal.
+This plugin lets you post from Obsidian to Bluesky. Open the post modal to compose freely and send your content to Bluesky.
 
 ## Main Features
 
 ### 📝 Posting
 
-- **Post Selected Text**: Send currently selected editor text to Bluesky
-- **Post Entire Note**: Send the full content of the current note to Bluesky
-- **Create New Post**: Open an empty post modal and compose freely
+- **Create Post**: Open the post modal to compose freely and send to Bluesky
 
 ### 🖼️ Image Attachment
 
@@ -40,23 +38,18 @@ This plugin lets you post from Obsidian to Bluesky. You can post selected text, 
 - **macOS**: `⌘` (Command)
 - **Windows/Linux**: `Ctrl`
 
-#### Default Hotkeys
+#### Customizable Hotkeys
 
-| Action | Shortcut | macOS | Windows/Linux |
-|--------|----------|-------|---------------|
-| Send Post | `Mod+Enter` | `⌘+Enter` | `Ctrl+Enter` |
-| Add Image | `Mod+I` | `⌘+I` | `Ctrl+I` |
-| Emoji Picker | `Mod+E` | `⌘+E` | `Ctrl+E` |
-| Cancel | `Escape` | `Escape` | `Escape` |
+You can configure hotkeys for the following actions in the post modal:
 
-#### Customizable
+| Action | Default |
+|--------|---------|
+| Send Post | None |
+| Add Image | None |
+| Emoji Picker | None |
+| Cancel | None |
 
-All hotkeys can be changed in settings. A conflict detector helps avoid clashes with system shortcuts.
-
-### 🌐 Localization
-
-- Japanese and English
-- Automatic language detection & switching
+All hotkeys can be customized in settings. For example: `Mod+Enter`, `Mod+I`, `Mod+E`, etc.
 
 ## Installation
 
@@ -87,9 +80,8 @@ npm run dev
 
 ### 2. Creating a Post
 
-- Use the Command Palette: "Post selection to Bluesky"
-- Click the ribbon icon
-- Use the editor context menu (right click)
+- Use the Command Palette: "Open post composer"
+- Click the ribbon icon (send icon)
 
 ### 3. Editing a Post
 
@@ -100,9 +92,8 @@ npm run dev
 
 ### 4. Sending a Post
 
-- Press `Mod+Enter`
-- Or click the Post button
-  - Button labeled "Post" at the bottom-right of the modal
+- Press your configured hotkey (e.g., `Mod+Enter`)
+- Or click the Post button at the bottom-right of the modal
 
 ## Technical Specs
 
@@ -124,7 +115,6 @@ npm run dev
 - **Modular**: Functional separation by file
 - **Type Safe**: Interfaces & types
 - **Error Handling**: User feedback & graceful failures
-- **Hotkey Conflict Detection**: Avoids OS / Obsidian clashes
 
 ## Settings
 
@@ -137,10 +127,10 @@ npm run dev
 
 ### Hotkeys
 
-- **Cancel**: Cancel post (default: `Escape`)
-- **Post**: Submit post (default: `Mod+Enter`)
-- **Add Image**: Add image (default: `Mod+I`)
-- **Emoji**: Open emoji picker (default: `Mod+E`)
+- **Cancel**: Cancel post (default: None)
+- **Post**: Submit post (default: None)
+- **Add Image**: Add image (default: None)
+- **Emoji**: Open emoji picker (default: None)
 
 #### Mod Key Behavior
 
@@ -165,11 +155,11 @@ npm run dev
 ### Common Issues
 
 1. **Login Fails**: Verify app password
-
-  - **Note**: You need a Bluesky account and an app password. Generate the app password from your Bluesky settings page.
+   - **Note**: You need a Bluesky account and an app password. Generate the app password from your Bluesky settings page.
 
 2. **Post Fails**: Check network & Bluesky status
-3. **Hotkeys Don’t Work**: Check for conflicts
+
+3. **Hotkeys Don't Work**: Verify your hotkeys are configured correctly in settings
 
 ### Logs
 
@@ -184,12 +174,10 @@ npm run dev
 
 ```text
 Post-To-Bluesky/
-├── main.ts                  # Main plugin class
-├── hotkeyConflictDetector.ts # Hotkey conflict detection
-├── locales.ts               # i18n
-├── styles.css               # Styles
-├── manifest.json            # Plugin manifest
-└── package.json             # Dependencies
+├── main.ts           # Main plugin class
+├── styles.css        # Styles
+├── manifest.json     # Plugin manifest
+└── package.json      # Dependencies
 ```
 
 ### Build & Test
@@ -218,12 +206,10 @@ Released under the 0BSD license.
 ### v1.0.0
 
 - Initial release
-- Core posting
+- Core posting functionality
 - Image attachments
 - Emoji picker
-- Localization
-- Hotkey configuration
-- Hotkey conflict detection
+- Customizable hotkey configuration
 
 ---
 

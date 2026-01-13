@@ -10,28 +10,24 @@
 
 **Features (EN)**:
 
-- Post selected text or entire note to Bluesky
+- Post to Bluesky from Obsidian
 - Attach up to 4 images
 - Emoji picker
-- Default hashtags & custom hotkeys
-- Japanese / English localization
-- Hotkey collision detection
+- Default hashtags
 
 **機能概要 (JP)**:
 
-- 選択テキスト / ノート全体をBlueskyへ投稿
+- ObsidianからBlueskyへ投稿
 - 画像最大4枚添付
 - 絵文字ピッカー
-- デフォルトハッシュタグ & カスタムホットキー
-- 日英ローカライズ対応
-- ホットキー衝突検出
+- デフォルトハッシュタグ設定
 
 ---
 
-ObsidianからBlueskyへノート全体や選択範囲を投稿できるプラグインです。
+ObsidianからBlueskyへ投稿できるプラグインです。
 Images・Emoji対応
 
-Post notes or selections with optional images & emoji.
+Post to Bluesky with optional images & emoji.
 
 詳しい使い方・設定手順は各言語のREADMEをご覧ください。
 
