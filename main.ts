@@ -340,10 +340,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			}
 		}
 	
-		public async updateLanguageSettings() {
+		public updateLanguageSettings() {
 			try {
 				// Use Obsidian's moment locale (reflects user's language setting)
-				const obsidianLang = (window as any).moment?.locale() || 'en';
+				const win = window as { moment?: { locale: () => string } };
+				const obsidianLang = win.moment?.locale() || 'en';
 				this.currentLocale = getLocaleByObsidianLanguage(obsidianLang);
 			} catch {
 				// Fallback to English if language detection fails
