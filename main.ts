@@ -311,7 +311,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 	
 	async onload() {
 		await this.loadSettings();
-		await this.updateLanguageSettings();
+		this.updateLanguageSettings();
 		this.addSettingTab(new BlueskySettingTab(this.app, this));
 
 		// 投稿用コマンド登録（コマンドパレット表示 & デフォルトホットキー）
