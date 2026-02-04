@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -59,7 +59,6 @@ type LocaleStrings = {
 	addEmoji: string;
 	hotkeys: string;
 	placeholderText: string;
-	settingsTitle: string;
 	handleLabel: string;
 	handleDesc: string;
 	handlePlaceholder: string;
@@ -197,7 +196,6 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			addEmoji: '絵文字追加',
 			hotkeys: 'ホットキー',
 			placeholderText: '投稿内容を入力...',
-			settingsTitle: 'Bluesky 設定',
 			handleLabel: 'ハンドル',
 			handleDesc: 'Bluesky のハンドル名を入力してください。',
 			handlePlaceholder: 'your-handle.bsky.social',
@@ -247,11 +245,10 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		pleaseEnterContent: 'Please enter post content.',
 		imageUploadError: 'Image upload error',
 		maxImagesReached: 'Maximum 4 images allowed.',
-		addImage: 'Add Image',
-		addEmoji: 'Add Emoji',
+		addImage: 'Add image',
+		addEmoji: 'Add emoji',
 		hotkeys: 'Hotkeys',
 		placeholderText: 'Enter post content...',
-		settingsTitle: 'Bluesky Settings',
 		handleLabel: 'Handle',
 		handleDesc: 'Enter your Bluesky handle.',
 		handlePlaceholder: 'your-handle.bsky.social',
@@ -261,7 +258,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		timeoutLabel: 'Timeout',
 		timeoutDesc: 'Network timeout (ms)',
 		timeoutPlaceholder: '15000',
-		hashtagsLabel: 'Default Hashtags',
+		hashtagsLabel: 'Default hashtags',
 		hashtagsDesc: 'Hashtags to add automatically when posting',
 		hashtagsPlaceholder: '#obsidian',
 		languageSettingsTitle: 'Language Settings',
@@ -342,9 +339,8 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 	
 		public updateLanguageSettings() {
 			try {
-				// Use Obsidian's moment locale (reflects user's language setting)
-				const win = window as { moment?: { locale: () => string } };
-				const obsidianLang = win.moment?.locale() || 'en';
+				// Use Obsidian's getLanguage() API to get the configured language
+				const obsidianLang = getLanguage();
 				this.currentLocale = getLocaleByObsidianLanguage(obsidianLang);
 			} catch {
 				// Fallback to English if language detection fails
@@ -1070,10 +1066,6 @@ class BlueskySettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
-
-		new Setting(containerEl)
-			.setHeading()
-			.setName(this.plugin.getLocale().settingsTitle);
 
 		new Setting(containerEl)
 			.setName(this.plugin.getLocale().handleLabel)
