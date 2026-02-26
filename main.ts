@@ -305,6 +305,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		refreshJwt: string | undefined;
 		did: string | undefined;
 		userAvatar: string | undefined;
+		activeModal: PostModal | null = null;
 	
 	async onload() {
 		await this.loadSettings();
@@ -316,6 +317,54 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			id: 'open-bluesky-composer',
 			name: 'Open post composer',
 			callback: () => this.openPostModal()
+		});
+
+		this.addCommand({
+			id: 'submit-post',
+			name: 'Submit post',
+			checkCallback: (checking: boolean) => {
+				if (this.activeModal) {
+					if (!checking) void this.activeModal.handlePost();
+					return true;
+				}
+				return false;
+			}
+		});
+
+		this.addCommand({
+			id: 'cancel-post',
+			name: 'Cancel post',
+			checkCallback: (checking: boolean) => {
+				if (this.activeModal) {
+					if (!checking) this.activeModal.close();
+					return true;
+				}
+				return false;
+			}
+		});
+
+		this.addCommand({
+			id: 'add-image',
+			name: 'Add image',
+			checkCallback: (checking: boolean) => {
+				if (this.activeModal) {
+					if (!checking) this.activeModal.fileInput.click();
+					return true;
+				}
+				return false;
+			}
+		});
+
+		this.addCommand({
+			id: 'toggle-emoji-picker',
+			name: 'Toggle emoji picker',
+			checkCallback: (checking: boolean) => {
+				if (this.activeModal) {
+					if (!checking) this.activeModal.toggleEmojiPicker();
+					return true;
+				}
+				return false;
+			}
 		});
 
 		// リボンアイコン（左サイドバー）
@@ -625,7 +674,9 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			if (!this.accessJwt) {
 				void this.login().catch(() => {});
 			}
-			new PostModal(this.app, this, initial).open();
+			const modal = new PostModal(this.app, this, initial);
+			this.activeModal = modal;
+			modal.open();
 		}
 	}
 
@@ -654,7 +705,7 @@ class PostModal extends Modal {
 		this.initialText = initialText;
 	}
 
-	private toggleEmojiPicker(): void {
+	toggleEmojiPicker(): void {
 		if (this.isEmojiPickerVisible) this.hideEmojiPicker();
 		else this.showEmojiPicker();
 	}
@@ -1043,6 +1094,7 @@ class PostModal extends Modal {
 	}
 
 		onClose() {
+		this.plugin.activeModal = null;
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
 		// 画像プレビューの blob URL を解放
