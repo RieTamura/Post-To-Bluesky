@@ -347,7 +347,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			id: 'add-image',
 			name: 'Add image',
 			checkCallback: (checking: boolean) => {
-				if (this.activeModal) {
+				if (this.activeModal && !this.activeModal.isPosting) {
 					if (!checking) this.activeModal.fileInput.click();
 					return true;
 				}
