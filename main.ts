@@ -1094,7 +1094,7 @@ class PostModal extends Modal {
 
 			if (await this.plugin.postToBluesky(text, embed)) {
 				this.close();
-			} else {
+			} else if (this.plugin.activeModal === this) {
 				this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
 			}
 		} finally {
