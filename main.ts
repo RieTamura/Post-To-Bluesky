@@ -668,6 +668,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		 * エディタの選択文字列（なければ先頭500文字）を初期値として投稿モーダルを開く
 		 */
 		openPostModal() {
+			if (this.activeModal) return;
 			// 投稿欄デフォルトは常に空欄にする要求のため、エディタ内容からの初期値取得を廃止
 			const initial = '';
 			// 予備ログイン（失敗しても無視）
@@ -1094,7 +1095,7 @@ class PostModal extends Modal {
 	}
 
 		onClose() {
-		this.plugin.activeModal = null;
+		if (this.plugin.activeModal === this) this.plugin.activeModal = null;
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
 		// 画像プレビューの blob URL を解放
