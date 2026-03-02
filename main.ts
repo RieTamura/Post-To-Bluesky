@@ -323,7 +323,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			id: 'submit-post',
 			name: 'Submit post',
 			checkCallback: (checking: boolean) => {
-				if (this.activeModal) {
+				if (this.activeModal && !this.activeModal.isPosting) {
 					if (!checking) void this.activeModal.handlePost();
 					return true;
 				}
@@ -697,6 +697,7 @@ class PostModal extends Modal {
 	pendingLinkPreviewUrl: string | null = null;
 	debounceTimer: number | null = null;
 	isEmojiPickerVisible = false;
+	isPosting = false;
 	outsideClickHandler?: (e: MouseEvent) => void;
 	private repositionEmojiPickerBound?: () => void;
 
@@ -1011,12 +1012,15 @@ class PostModal extends Modal {
 	}
 
 	async handlePost() {
+		if (this.isPosting) return;
 		const text = this.textArea.value.trim();
 		if (!text && this.selectedImages.length === 0) {
 			new Notice(this.plugin.getLocale().pleaseEnterContent);
 			return;
 		}
+		this.isPosting = true;
 		this.postButton.setButtonText(this.plugin.getLocale().posting).setDisabled(true);
+		try {
 		let embed: Embed | undefined;
 
 		if (this.selectedImages.length > 0) {
@@ -1087,10 +1091,13 @@ class PostModal extends Modal {
 			};
 		}
 
-		if (await this.plugin.postToBluesky(text, embed)) {
-			this.close();
-		} else {
-			this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
+			if (await this.plugin.postToBluesky(text, embed)) {
+				this.close();
+			} else {
+				this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
+			}
+		} finally {
+			this.isPosting = false;
 		}
 	}
 
