@@ -1056,8 +1056,9 @@ class PostModal extends Modal {
 				}));
 				embed = { $type: 'app.bsky.embed.images', images: uploadedImages };
 			} catch (error) {
-							new Notice(`${this.plugin.getLocale().imageUploadError}: ${error.message}`);
-			this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
+				const message = error instanceof Error ? error.message : String(error);
+				new Notice(`${this.plugin.getLocale().imageUploadError}: ${message}`);
+				this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
 				return;
 			}
 		} else if (this.linkPreviewData?.title) {
