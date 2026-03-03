@@ -305,6 +305,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		refreshJwt: string | undefined;
 		did: string | undefined;
 		userAvatar: string | undefined;
+		activeModal: PostModal | null = null;
 	
 	async onload() {
 		await this.loadSettings();
@@ -316,6 +317,54 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			id: 'open-bluesky-composer',
 			name: 'Open post composer',
 			callback: () => this.openPostModal()
+		});
+
+		this.addCommand({
+			id: 'submit-post',
+			name: 'Submit post',
+			checkCallback: (checking: boolean) => {
+				if (this.activeModal && !this.activeModal.isPosting) {
+					if (!checking) void this.activeModal.handlePost();
+					return true;
+				}
+				return false;
+			}
+		});
+
+		this.addCommand({
+			id: 'cancel-post',
+			name: 'Cancel post',
+			checkCallback: (checking: boolean) => {
+				if (this.activeModal) {
+					if (!checking) this.activeModal.close();
+					return true;
+				}
+				return false;
+			}
+		});
+
+		this.addCommand({
+			id: 'add-image',
+			name: 'Add image',
+			checkCallback: (checking: boolean) => {
+				if (this.activeModal && !this.activeModal.isPosting) {
+					if (!checking) this.activeModal.fileInput.click();
+					return true;
+				}
+				return false;
+			}
+		});
+
+		this.addCommand({
+			id: 'toggle-emoji-picker',
+			name: 'Toggle emoji picker',
+			checkCallback: (checking: boolean) => {
+				if (this.activeModal) {
+					if (!checking) this.activeModal.toggleEmojiPicker();
+					return true;
+				}
+				return false;
+			}
 		});
 
 		// リボンアイコン（左サイドバー）
@@ -619,13 +668,16 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		 * エディタの選択文字列（なければ先頭500文字）を初期値として投稿モーダルを開く
 		 */
 		openPostModal() {
+			if (this.activeModal) return;
 			// 投稿欄デフォルトは常に空欄にする要求のため、エディタ内容からの初期値取得を廃止
 			const initial = '';
 			// 予備ログイン（失敗しても無視）
 			if (!this.accessJwt) {
 				void this.login().catch(() => {});
 			}
-			new PostModal(this.app, this, initial).open();
+			const modal = new PostModal(this.app, this, initial);
+			this.activeModal = modal;
+			modal.open();
 		}
 	}
 
@@ -645,6 +697,7 @@ class PostModal extends Modal {
 	pendingLinkPreviewUrl: string | null = null;
 	debounceTimer: number | null = null;
 	isEmojiPickerVisible = false;
+	isPosting = false;
 	outsideClickHandler?: (e: MouseEvent) => void;
 	private repositionEmojiPickerBound?: () => void;
 
@@ -654,7 +707,7 @@ class PostModal extends Modal {
 		this.initialText = initialText;
 	}
 
-	private toggleEmojiPicker(): void {
+	toggleEmojiPicker(): void {
 		if (this.isEmojiPickerVisible) this.hideEmojiPicker();
 		else this.showEmojiPicker();
 	}
@@ -959,12 +1012,15 @@ class PostModal extends Modal {
 	}
 
 	async handlePost() {
+		if (this.isPosting) return;
 		const text = this.textArea.value.trim();
 		if (!text && this.selectedImages.length === 0) {
 			new Notice(this.plugin.getLocale().pleaseEnterContent);
 			return;
 		}
+		this.isPosting = true;
 		this.postButton.setButtonText(this.plugin.getLocale().posting).setDisabled(true);
+		try {
 		let embed: Embed | undefined;
 
 		if (this.selectedImages.length > 0) {
@@ -1000,8 +1056,9 @@ class PostModal extends Modal {
 				}));
 				embed = { $type: 'app.bsky.embed.images', images: uploadedImages };
 			} catch (error) {
-							new Notice(`${this.plugin.getLocale().imageUploadError}: ${error.message}`);
-			this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
+				const message = error instanceof Error ? error.message : String(error);
+				new Notice(`${this.plugin.getLocale().imageUploadError}: ${message}`);
+				this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
 				return;
 			}
 		} else if (this.linkPreviewData?.title) {
@@ -1035,14 +1092,18 @@ class PostModal extends Modal {
 			};
 		}
 
-		if (await this.plugin.postToBluesky(text, embed)) {
-			this.close();
-		} else {
-			this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
+			if (await this.plugin.postToBluesky(text, embed)) {
+				this.close();
+			} else if (this.plugin.activeModal === this) {
+				this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
+			}
+		} finally {
+			this.isPosting = false;
 		}
 	}
 
 		onClose() {
+		if (this.plugin.activeModal === this) this.plugin.activeModal = null;
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
 		// 画像プレビューの blob URL を解放
