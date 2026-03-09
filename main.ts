@@ -323,11 +323,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			id: 'submit-post',
 			name: 'Submit post',
 			checkCallback: (checking: boolean) => {
+				if (checking) return true;
 				if (this.activeModal && !this.activeModal.isPosting) {
-					if (!checking) void this.activeModal.handlePost();
-					return true;
+					void this.activeModal.handlePost();
 				}
-				return false;
+				return true;
 			}
 		});
 
@@ -335,11 +335,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			id: 'cancel-post',
 			name: 'Cancel post',
 			checkCallback: (checking: boolean) => {
+				if (checking) return true;
 				if (this.activeModal) {
-					if (!checking) this.activeModal.close();
-					return true;
+					this.activeModal.close();
 				}
-				return false;
+				return true;
 			}
 		});
 
@@ -347,11 +347,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			id: 'add-image',
 			name: 'Add image',
 			checkCallback: (checking: boolean) => {
+				if (checking) return true;
 				if (this.activeModal && !this.activeModal.isPosting) {
-					if (!checking) this.activeModal.fileInput.click();
-					return true;
+					this.activeModal.fileInput.click();
 				}
-				return false;
+				return true;
 			}
 		});
 
@@ -359,11 +359,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			id: 'toggle-emoji-picker',
 			name: 'Toggle emoji picker',
 			checkCallback: (checking: boolean) => {
+				if (checking) return true;
 				if (this.activeModal) {
-					if (!checking) this.activeModal.toggleEmojiPicker();
-					return true;
+					this.activeModal.toggleEmojiPicker();
 				}
-				return false;
+				return true;
 			}
 		});
 
