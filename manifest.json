@@ -1,7 +1,7 @@
 {
 	"id": "post-to-bluesky",
 	"name": "Post To Bluesky",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"minAppVersion": "1.8.0",
 	"description": "Post selected text or entire note to Bluesky.",
 	"author": "RieTamura",
