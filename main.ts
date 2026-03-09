@@ -813,6 +813,35 @@ class PostModal extends Modal {
 		this.textArea.addEventListener('input', () => { this.updateCharCount(); });
 		this.updateCharCount();
 		// 初期表示では絵文字ピッカーは閉じたまま
+		this.setupModalHotkeys();
+	}
+
+	private setupModalHotkeys(): void {
+		// textareaフォーカス中はObsidianのグローバルホットキーが無効になるため、
+		// モーダルスコープに直接登録することでユーザー設定のホットキーを有効にする
+		type Hotkey = { modifiers: string[]; key: string };
+		const hotkeyManager = (this.app as any).hotkeyManager;
+		if (!hotkeyManager) return;
+
+		const getHotkeys = (commandId: string): Hotkey[] =>
+			hotkeyManager.getHotkeys(`post-to-bluesky:${commandId}`) ?? [];
+
+		const actions: Record<string, () => void> = {
+			'submit-post': () => { if (!this.isPosting) void this.handlePost(); },
+			'cancel-post': () => this.close(),
+			'add-image': () => { if (!this.isPosting) this.fileInput.click(); },
+			'toggle-emoji-picker': () => this.toggleEmojiPicker(),
+		};
+
+		for (const [cmdId, action] of Object.entries(actions)) {
+			for (const hk of getHotkeys(cmdId)) {
+				this.scope.register(hk.modifiers as any, hk.key, (e: KeyboardEvent) => {
+					e.preventDefault();
+					action();
+					return false;
+				});
+			}
+		}
 	}
 
 	showEmojiPicker(): void {
