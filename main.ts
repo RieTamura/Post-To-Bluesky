@@ -322,40 +322,48 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		this.addCommand({
 			id: 'submit-post',
 			name: 'Submit post',
-			callback: () => {
+			checkCallback: (checking: boolean) => {
 				if (this.activeModal && !this.activeModal.isPosting) {
-					void this.activeModal.handlePost();
+					if (!checking) void this.activeModal.handlePost();
+					return true;
 				}
+				return false;
 			}
 		});
 
 		this.addCommand({
 			id: 'cancel-post',
 			name: 'Cancel post',
-			callback: () => {
+			checkCallback: (checking: boolean) => {
 				if (this.activeModal) {
-					this.activeModal.close();
+					if (!checking) this.activeModal.close();
+					return true;
 				}
+				return false;
 			}
 		});
 
 		this.addCommand({
 			id: 'add-image',
 			name: 'Add image',
-			callback: () => {
+			checkCallback: (checking: boolean) => {
 				if (this.activeModal && !this.activeModal.isPosting) {
-					this.activeModal.fileInput.click();
+					if (!checking) this.activeModal.fileInput.click();
+					return true;
 				}
+				return false;
 			}
 		});
 
 		this.addCommand({
 			id: 'toggle-emoji-picker',
 			name: 'Toggle emoji picker',
-			callback: () => {
+			checkCallback: (checking: boolean) => {
 				if (this.activeModal) {
-					this.activeModal.toggleEmojiPicker();
+					if (!checking) this.activeModal.toggleEmojiPicker();
+					return true;
 				}
+				return false;
 			}
 		});
 
