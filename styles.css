@@ -135,8 +135,9 @@
   border-top: 1px solid var(--background-modifier-border);
 }
 
-.bluesky-hidden {
-  display: none !important;
+.bluesky-emoji-picker-container.bluesky-hidden,
+input.bluesky-hidden {
+  display: none;
 }
 
 /* Layout adjustment inside footer */

@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Modifier } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -707,21 +707,14 @@ class PostModal extends Modal {
 	// モーダル外（body直下）にピッカーを生成（EMOJI_LIST を利用）
 	private initExternalEmojiPicker(): void {
 		if (!this.emojiPickerContainer) {
-			this.emojiPickerContainer = document.createElement('div');
-			this.emojiPickerContainer.className = 'bluesky-emoji-picker-container bluesky-emoji-floating bluesky-hidden';
-			document.body.appendChild(this.emojiPickerContainer);
+			this.emojiPickerContainer = activeDocument.body.createDiv({ cls: 'bluesky-emoji-picker-container bluesky-emoji-floating bluesky-hidden' });
 		}
 		this.emojiPickerContainer.replaceChildren();
-		const grid = document.createElement('div');
-		grid.className = 'bluesky-emoji-grid';
+		const grid = this.emojiPickerContainer.createDiv({ cls: 'bluesky-emoji-grid' });
 		EMOJI_LIST.forEach(em => {
-			const span = document.createElement('span');
-			span.textContent = em;
-			span.className = 'bluesky-emoji-item';
+			const span = grid.createSpan({ cls: 'bluesky-emoji-item', text: em });
 			span.addEventListener('click', () => this.insertEmoji(em));
-			grid.appendChild(span);
 		});
-		this.emojiPickerContainer.appendChild(grid);
 	}
 
 	private repositionEmojiPicker() {
@@ -773,7 +766,7 @@ class PostModal extends Modal {
 
 		// モーダル表示時にカーソルをテキストエリア先頭（左端）へ移動
 		// （ハッシュタグ挿入済みでも先頭に配置する要求仕様）
-		setTimeout(() => {
+		activeWindow.setTimeout(() => {
 			this.textArea.focus();
 			this.textArea.setSelectionRange(0, 0);
 		}, 0);
@@ -819,8 +812,9 @@ class PostModal extends Modal {
 	private setupModalHotkeys(): void {
 		// textareaフォーカス中はObsidianのグローバルホットキーが無効になるため、
 		// モーダルスコープに直接登録することでユーザー設定のホットキーを有効にする
-		type Hotkey = { modifiers: string[]; key: string };
-		const hotkeyManager = (this.app as any).hotkeyManager;
+		type Hotkey = { modifiers: Modifier[]; key: string };
+		type HotkeyManagerLike = { getHotkeys(commandId: string): Hotkey[] | null | undefined };
+		const hotkeyManager = (this.app as App & { hotkeyManager?: HotkeyManagerLike }).hotkeyManager;
 		if (!hotkeyManager) return;
 
 		const getHotkeys = (commandId: string): Hotkey[] =>
@@ -835,7 +829,7 @@ class PostModal extends Modal {
 
 		for (const [cmdId, action] of Object.entries(actions)) {
 			for (const hk of getHotkeys(cmdId)) {
-				this.scope.register(hk.modifiers as any, hk.key, (e: KeyboardEvent) => {
+				this.scope.register(hk.modifiers, hk.key, (e: KeyboardEvent) => {
 					e.preventDefault();
 					action();
 					return false;
@@ -855,7 +849,7 @@ class PostModal extends Modal {
 				this.hideEmojiPicker();
 			}
 		};
-		document.addEventListener('mousedown', this.outsideClickHandler);
+		activeDocument.addEventListener('mousedown', this.outsideClickHandler);
 		this.repositionEmojiPickerBound = () => this.repositionEmojiPicker();
 		window.addEventListener('resize', this.repositionEmojiPickerBound);
 		window.addEventListener('scroll', this.repositionEmojiPickerBound, true);
@@ -867,7 +861,7 @@ class PostModal extends Modal {
 		this.isEmojiPickerVisible = false;
 		// Clean up event listeners
 		if (this.outsideClickHandler) {
-			document.removeEventListener('mousedown', this.outsideClickHandler);
+			activeDocument.removeEventListener('mousedown', this.outsideClickHandler);
 			this.outsideClickHandler = undefined;
 		}
 		if (this.repositionEmojiPickerBound) {
@@ -935,7 +929,7 @@ class PostModal extends Modal {
 			}
 		});
 		this.imagePreviewContainer.empty();
-		this.selectedImages.forEach((file, index) => {
+		this.selectedImages.forEach((file) => {
 			const previewEl = this.imagePreviewContainer.createDiv({ cls: 'bluesky-image-preview' });
 			const img = previewEl.createEl('img', { attr: { alt: file.name || 'image' } });
 			const objectUrl = URL.createObjectURL(file);
@@ -966,8 +960,8 @@ class PostModal extends Modal {
 	}
 
 	debounceUpdatePreviews() {
-		if (this.debounceTimer) clearTimeout(this.debounceTimer);
-		this.debounceTimer = window.setTimeout(() => {
+		if (this.debounceTimer) activeWindow.clearTimeout(this.debounceTimer);
+		this.debounceTimer = activeWindow.setTimeout(() => {
 			void this.updateLinkPreview();
 		}, 500);
 	}
@@ -1049,7 +1043,7 @@ class PostModal extends Modal {
 				const uploadedImages: Image[] = await Promise.all(this.selectedImages.map(async (file) => {
 					const imageBitmap = await createImageBitmap(file);
 					const { width, height } = imageBitmap;
-					const canvas = document.createElement('canvas');
+					const canvas = createEl('canvas');
 					const MAX_EDGE = 2048;
 					const scale = Math.min(1, MAX_EDGE / Math.max(width, height));
 					canvas.width = Math.max(1, Math.round(width * scale));
@@ -1125,7 +1119,7 @@ class PostModal extends Modal {
 
 		onClose() {
 		if (this.plugin.activeModal === this) this.plugin.activeModal = null;
-		if (this.debounceTimer) clearTimeout(this.debounceTimer);
+		if (this.debounceTimer) activeWindow.clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
 		// 画像プレビューの blob URL を解放
 		try {
