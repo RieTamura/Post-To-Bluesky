@@ -8,6 +8,16 @@ export default [
 	},
 	eslint.configs.recommended,
 	{
+		files: ["*.mjs"],
+		languageOptions: {
+			sourceType: "module",
+			globals: {
+				process: "readonly",
+				console: "readonly",
+			},
+		},
+	},
+	{
 		files: ["**/*.ts"],
 		languageOptions: {
 			parser: tsParser,
