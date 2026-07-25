@@ -1,5 +1,5 @@
 import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Modifier } from 'obsidian';
-import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
+import type { RequestUrlParam, RequestUrlResponse, SettingDefinitionItem } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
 const EMOJI_LIST: string[] = [
@@ -567,7 +567,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 					throw new Error(message);
 				} catch (error) {
 					if (error instanceof Error && error.message === 'Request timed out') {
-						throw new Error('画像アップロードがタイムアウトしました');
+						throw new Error('画像アップロードがタイムアウトしました', { cause: error });
 					}
 					throw error;
 				}
@@ -766,7 +766,7 @@ class PostModal extends Modal {
 
 		// モーダル表示時にカーソルをテキストエリア先頭（左端）へ移動
 		// （ハッシュタグ挿入済みでも先頭に配置する要求仕様）
-		activeWindow.setTimeout(() => {
+		window.setTimeout(() => {
 			this.textArea.focus();
 			this.textArea.setSelectionRange(0, 0);
 		}, 0);
@@ -960,8 +960,8 @@ class PostModal extends Modal {
 	}
 
 	debounceUpdatePreviews() {
-		if (this.debounceTimer) activeWindow.clearTimeout(this.debounceTimer);
-		this.debounceTimer = activeWindow.setTimeout(() => {
+		if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
+		this.debounceTimer = window.setTimeout(() => {
 			void this.updateLinkPreview();
 		}, 500);
 	}
@@ -1119,7 +1119,7 @@ class PostModal extends Modal {
 
 		onClose() {
 		if (this.plugin.activeModal === this) this.plugin.activeModal = null;
-		if (this.debounceTimer) activeWindow.clearTimeout(this.debounceTimer);
+		if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
 		// 画像プレビューの blob URL を解放
 		try {
@@ -1139,6 +1139,54 @@ class BlueskySettingTab extends PluginSettingTab {
 
 	constructor(app: App, plugin: BlueskyPlugin) { super(app, plugin); this.plugin = plugin; }
 
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		const locale = this.plugin.getLocale();
+		return [
+			{
+				name: locale.handleLabel,
+				desc: locale.handleDesc,
+				control: { type: 'text', key: 'handle', placeholder: locale.handlePlaceholder }
+			},
+			{
+				// パスワードは入力マスクが必要なため render で描画（宣言的 text コントロールは type='password' 不可）
+				name: locale.passwordLabel,
+				desc: locale.passwordDesc,
+				render: (setting) => {
+					setting.addText(text => {
+						text.setPlaceholder(locale.passwordPlaceholder)
+							.setValue(this.plugin.settings.password);
+						text.inputEl.type = 'password';
+						text.inputEl.autocomplete = 'current-password';
+						text.onChange(async (value) => {
+							this.plugin.settings.password = value;
+							await this.plugin.saveSettings();
+						});
+					});
+				}
+			},
+			{
+				name: locale.timeoutLabel,
+				desc: locale.timeoutDesc,
+				control: { type: 'number', key: 'networkTimeoutMs', placeholder: locale.timeoutPlaceholder, defaultValue: 15000, min: 1000, max: 60000, step: 1 }
+			},
+			{
+				name: locale.hashtagsLabel,
+				desc: locale.hashtagsDesc,
+				control: { type: 'text', key: 'defaultHashtags', placeholder: locale.hashtagsPlaceholder }
+			}
+		];
+	}
+
+	setControlValue(key: string, value: unknown): Promise<void> {
+		if (key === 'networkTimeoutMs') {
+			const n = Number(value);
+			value = Number.isFinite(n) ? Math.min(Math.max(Math.round(n), 1000), 60000) : 15000;
+		}
+		(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+		return this.plugin.saveSettings();
+	}
+
+	// Obsidian 1.13 未満用フォールバック（1.13+ では getSettingDefinitions から宣言的に描画される）
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
