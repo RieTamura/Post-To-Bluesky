@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Platform, AbstractInputSuggest, normalizePath, TFile, TFolder, Modifier } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Platform, AbstractInputSuggest, normalizePath, requireApiVersion, TFile, TFolder, Modifier } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse, SettingDefinitionItem } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -93,6 +93,28 @@ function stripHashtags(text: string, tags: string[]): string {
  */
 function toYamlTag(tag: string): string {
 	return /^[A-Za-z_\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(tag) ? tag : `"${tag}"`;
+}
+
+/**
+ * frontmatter の値を下書き判定用に文字列化する。
+ * 配列やオブジェクトが紛れ込んでも "[object Object]" のような無意味な文字列にせず、
+ * 判定値と一致し得ない空文字を返す。
+ */
+function frontmatterValueToString(value: unknown): string {
+	if (typeof value === 'string') return value;
+	if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+	return '';
+}
+
+/**
+ * frontmatter の値が下書き判定値と一致するか（配列の場合は要素のいずれかが一致するか）。
+ * 下書き一覧のフィルタと投稿後の下書き値の削除で**同じ判定を使う**ための共通関数。
+ * 別々に実装すると片方だけずれて「投稿したのに一覧から消えない」事故になる。
+ */
+function frontmatterMatchesValue(value: unknown, target: string): boolean {
+	if (!target || value === undefined || value === null) return false;
+	if (Array.isArray(value)) return (value as unknown[]).some((v) => frontmatterValueToString(v) === target);
+	return frontmatterValueToString(value) === target;
 }
 
 // 入力途中のURL（例: "https://"）は new URL() が例外を投げるため安全に解析する
@@ -520,7 +542,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 	onunload(): void {}
 
 	async loadSettings() {
-		const loaded = await this.loadData();
+		const loaded = await this.loadData() as Partial<BlueskyPluginSettings> | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
 	}
 
@@ -925,14 +947,14 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			const key = this.settings.draftProperty || DEFAULT_SETTINGS.draftProperty;
 			const draftValue = this.settings.draftValue;
 			const postedAt = this.formatLocalTimestamp(new Date());
-			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+			await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 				const current: unknown = frontmatter[key];
 				if (Array.isArray(current)) {
-					const rest = current.filter((v) => String(v) !== draftValue);
+					const rest = (current as unknown[]).filter((v) => !frontmatterMatchesValue(v, draftValue));
 					// 下書き値しか入っていなかった場合はキーごと削除する
 					if (rest.length > 0) frontmatter[key] = rest;
 					else delete frontmatter[key];
-				} else if (current !== undefined && String(current) === draftValue) {
+				} else if (frontmatterMatchesValue(current, draftValue)) {
 					delete frontmatter[key];
 				}
 				frontmatter[POSTED_CHECKBOX_PROPERTY] = true;
@@ -1434,10 +1456,7 @@ class DraftSelectModal extends Modal {
 
 	/** frontmatter の値が下書き判定値と一致するか（配列型も許容） */
 	private matchesDraftValue(value: unknown): boolean {
-		const target = this.plugin.settings.draftValue;
-		if (!target || value === undefined || value === null) return false;
-		if (Array.isArray(value)) return value.some((v) => String(v) === target);
-		return String(value) === target;
+		return frontmatterMatchesValue(value, this.plugin.settings.draftValue);
 	}
 
 	getDraftFiles(): TFile[] {
@@ -1638,7 +1657,9 @@ class BlueskySettingTab extends PluginSettingTab {
 		}
 		(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
 		// 履歴トグルの状態は保存先フォルダ欄の disabled 判定に使われるため再評価させる
-		if (key === 'postHistoryEnabled') this.refreshDomState();
+		// refreshDomState() は 1.13.0 で追加されたAPI。この経路自体が宣言的レンダラ
+		// （1.13+）からしか呼ばれないが、minAppVersion が 1.8.7 なので明示的にガードする
+		if (requireApiVersion('1.13.0') && key === 'postHistoryEnabled') this.refreshDomState();
 		return this.plugin.saveSettings();
 	}
 
@@ -1721,6 +1742,16 @@ class BlueskySettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		// 保存先フォルダ欄はトグルに追従してグレーアウトさせる。display() を呼び直すと
+		// 設定画面ごと作り直しになり入力中のフォーカスも飛ぶので、該当欄だけを更新する
+		let folderSetting: Setting | null = null;
+		let folderText: TextComponent | null = null;
+		const applyFolderDisabled = () => {
+			const disabled = !this.plugin.settings.postHistoryEnabled;
+			folderSetting?.setDisabled(disabled);
+			folderText?.setDisabled(disabled);
+		};
+
 		new Setting(containerEl)
 			.setName(locale.postHistoryLabel)
 			.setDesc(locale.postHistoryDesc)
@@ -1729,19 +1760,16 @@ class BlueskySettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.postHistoryEnabled = value;
 					await this.plugin.saveSettings();
-					// 保存先フォルダ欄の有効/無効を切り替えるため再描画する
-					this.display();
+					applyFolderDisabled();
 				}));
 
-		const historyEnabled = this.plugin.settings.postHistoryEnabled;
-		new Setting(containerEl)
+		folderSetting = new Setting(containerEl)
 			.setName(locale.postHistoryFolderLabel)
 			.setDesc(locale.postHistoryFolderDesc)
-			.setDisabled(!historyEnabled)
 			.addText(text => {
+				folderText = text;
 				text.setPlaceholder(DEFAULT_SETTINGS.postHistoryFolder)
 					.setValue(this.plugin.settings.postHistoryFolder)
-					.setDisabled(!historyEnabled)
 					.onChange(async (value) => {
 						this.plugin.settings.postHistoryFolder = value;
 						await this.plugin.saveSettings();
@@ -1752,5 +1780,7 @@ class BlueskySettingTab extends PluginSettingTab {
 					void this.plugin.saveSettings();
 				});
 			});
+
+		applyFolderDisabled();
 	}
 }
