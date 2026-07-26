@@ -1,7 +1,7 @@
 # 実装計画書: BASE連携 下書き投稿機能 + モバイル対応
 
 作成日: 2026-03-10
-更新日: 2026-07-25（投稿履歴機能 B / 下書きfrontmatter更新 C を追記）
+更新日: 2026-07-26（履歴ノート保存先をフォルダサジェスト対応に変更）
 対象バージョン: v0.1.5 → v0.2.0
 
 ---
@@ -66,7 +66,7 @@
 | ファイル | 変更内容 | 変更規模 |
 |---------|---------|---------|
 | `manifest.json` | `isDesktopOnly: false` | 1行 |
-| `main.ts` | 設定・ロケール・コマンド・モーダル追加、モバイル分岐、投稿履歴 | +約200行 |
+| `main.ts` | 設定・ロケール・コマンド・モーダル追加、モバイル分岐、投稿履歴、FolderSuggest | +約225行 |
 
 ---
 
@@ -93,7 +93,8 @@ interface BlueskyPluginSettings {
   draftProperty: string;      // 追加: frontmatterキー (デフォルト: "type")
   draftValue: string;         // 追加: frontmatter値   (デフォルト: "bluesky-draft")
   postHistoryEnabled: boolean; // 追加(B): 投稿履歴ノートを自動作成するか (デフォルト: false)
-  postHistoryFolder: string;   // 追加(B): 履歴ノートの保存先フォルダ (デフォルト: "Bluesky Posts")
+  postHistoryFolder: string;   // 追加(B): 履歴ノートの保存先フォルダパス (デフォルト: "Bluesky Posts")
+                               //         設定画面ではフォルダサジェストで選択する（詳細設計 7-2）
 }
 
 const DEFAULT_SETTINGS: BlueskyPluginSettings = {
@@ -219,9 +220,82 @@ if (!Platform.isMobile) {
 [ 投稿履歴を保存 ]      トグル: オフ（デフォルト）
   投稿成功時に本文・日時・URL入りのノートを自動作成します
 
-[ 履歴ノートの保存先 ]  入力欄: "Bluesky Posts"
+[ 履歴ノートの保存先 ]  フォルダ選択欄: "Bluesky Posts"
   履歴ノートを作成するフォルダ（存在しなければ自動作成）
+  → vault内フォルダのサジェスト付き。詳細は 7-2
 ```
+
+#### 7-2. 履歴ノート保存先のフォルダ選択
+
+保存先はプレーンなテキスト入力ではなく、**vault内フォルダのサジェスト付き入力**にする。
+フォルダ名のタイポで意図しない場所にノートが量産される事故を防ぐため。
+設定UIが二重管理（1.13+ 宣言的API / 1.13未満 `display()`）なので、実装も2系統必要。
+
+**(a) Obsidian 1.13+ — `getSettingDefinitions()`**
+
+`SettingFolderControl`（`obsidian.d.ts` / API 1.13.0〜）が標準で用意されている。
+`control.type` を `'folder'` にするだけでフォルダサジェスト付き入力になる。
+
+```typescript
+{
+  name: locale.postHistoryFolderLabel,
+  desc: locale.postHistoryFolderDesc,
+  control: {
+    type: 'folder',
+    key: 'postHistoryFolder',
+    placeholder: 'Bluesky Posts',
+    defaultValue: 'Bluesky Posts',
+    includeRoot: true,                // vault ルート "/" も候補に含める
+    disabled: () => !this.plugin.settings.postHistoryEnabled
+  }
+}
+```
+
+- `validate?: (value) => string | void` — 不正なパスをインラインのエラーメッセージで弾ける
+- `disabled?: boolean | (() => boolean)` — 「投稿履歴を保存」がオフのとき欄をグレーアウト。
+  トグル切替後は設定タブの `update()` を呼んで再評価させる
+- `filter?: (folder: TFolder) => boolean` — 候補の絞り込み（今回は未使用）
+
+**(b) Obsidian 1.13未満 — `display()` フォールバック**
+
+宣言的APIがないため `AbstractInputSuggest`（API 1.4.10〜）を継承した小クラスを自前で用意する。
+`minAppVersion: 1.8.7` のまま利用可能。`vault.getAllFolders()` も API 1.6.6〜で問題なし。
+
+```typescript
+class FolderSuggest extends AbstractInputSuggest<TFolder> {
+  getSuggestions(query: string): TFolder[] {
+    const q = query.toLowerCase();
+    return this.app.vault.getAllFolders(true)
+      .filter(f => f.path.toLowerCase().contains(q));
+  }
+  renderSuggestion(folder: TFolder, el: HTMLElement) { el.setText(folder.path); }
+  selectSuggestion(folder: TFolder) { /* setValue + onSelect コールバック + close */ }
+}
+
+// display() 側
+.addText(text => {
+  text.setPlaceholder('Bluesky Posts')
+      .setValue(this.plugin.settings.postHistoryFolder)
+      .onChange(async v => {
+        this.plugin.settings.postHistoryFolder = v;
+        await this.plugin.saveSettings();
+      });
+  new FolderSuggest(this.app, text.inputEl)
+      .onSelect(async v => {
+        text.setValue(v);
+        this.plugin.settings.postHistoryFolder = v;
+        await this.plugin.saveSettings();
+      });
+})
+```
+
+**注意点**
+
+- どちらの方式でも**存在しないフォルダ名を手入力できる**ため、
+  8章の「なければ `vault.createFolder()` で作成」は引き続き必須
+- OSのフォルダ選択ダイアログ（Electron の `dialog.showOpenDialog`）は
+  モバイルで動作しないため**採用しない**。vault内サジェストがデスクトップ・モバイル
+  両対応の唯一の手段
 
 ---
 
@@ -299,6 +373,7 @@ Step 3  BlueskyPluginSettings + DEFAULT_SETTINGS 更新（4フィールド）
 Step 4  PostModal: Platform.isMobile による画像UI分岐
 Step 5  postToBluesky() の戻り値変更（投稿URLを返す）
 Step 6  投稿履歴ノート作成処理 + 設定2件（トグル・フォルダ）追加
+        フォルダ欄は 1.13+ = control type:'folder' / 1.13未満 = FolderSuggest クラス（7-2）
 
 --- フェーズ2: 下書き機能 + frontmatter更新 (C) ---
 Step 7  DraftSelectModal クラス新規作成
@@ -315,7 +390,7 @@ Step 11 PostModal に由来ノート保持フィールド追加、
 
 | 観点 | 評価 | 備考 |
 |------|------|------|
-| 工数 | 中（約200行追加） | 既存コードの大規模変更なし（postToBlueskyの戻り値変更のみ） |
+| 工数 | 中（約225行追加） | 既存コードの大規模変更なし（postToBlueskyの戻り値変更のみ） |
 | 保守性 | 高 | コアAPIのみ使用、BASE API依存なし |
 | モバイル対応 | 完全 | テキスト投稿の全機能が動作 |
 | リスク | 低 | 安定したObsidian APIのみ使用 |
@@ -327,7 +402,8 @@ Step 11 PostModal に由来ノート保持フィールド追加、
 
 | 項目 | 内容 |
 |------|------|
-| Obsidianバージョン | `Platform.isMobile` は v0.9.11以上（minAppVersion: 1.8.0 で問題なし） |
+| Obsidianバージョン | `Platform.isMobile` は v0.9.11以上（minAppVersion: 1.8.7 で問題なし） |
+| フォルダサジェスト | `AbstractInputSuggest` は API 1.4.10〜、`vault.getAllFolders()` は 1.6.6〜。宣言的APIの `type: 'folder'` は 1.13.0〜のため、1.13未満は自前クラスで代替（7-2） |
 | frontmatterの型 | 値が文字列・配列どちらも対応（例: `type: [bluesky-draft, note]`） |
 | 本文の扱い | frontmatterブロックは除外してPostModalにセット |
 | 300文字制限 | 一覧に文字数バッジを表示（300字超は赤）。選択時にNoticeで警告。PostModalで編集して投稿 |
