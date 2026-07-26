@@ -301,6 +301,63 @@ input.bluesky-hidden {
   transform: scale(1.1);
 }
 
+/* Draft select modal */
+.bluesky-draft-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.bluesky-draft-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.bluesky-draft-item:hover,
+.bluesky-draft-item:focus-visible {
+  background: var(--background-modifier-hover);
+}
+
+.bluesky-draft-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.bluesky-draft-name {
+  flex-grow: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bluesky-draft-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bluesky-draft-count.bluesky-over-limit {
+  color: var(--text-error);
+  font-weight: bold;
+}
+
+.bluesky-draft-note {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* Hotkey conflict warning styles */
 .hotkey-conflict-warning {
 	margin: 10px 0;

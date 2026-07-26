@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Modifier } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Platform, AbstractInputSuggest, normalizePath, TFile, TFolder, Modifier } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse, SettingDefinitionItem } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -13,9 +13,21 @@ const EMOJI_LIST: string[] = [
 
 const URL_DETECTION_REGEX = /https?:\/\/[^\s<>()\]{}"']+/g;
 const TRAILING_PUNCT_REGEX = /[\])}.,!?]+$/;
+const HASHTAG_DETECTION_REGEX = /#[\w\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+/g;
+// Bluesky のタグ長上限
+const MAX_TAG_LENGTH = 64;
 
 function createUrlRegex(): RegExp {
 	return new RegExp(URL_DETECTION_REGEX.source, 'g');
+}
+
+function createHashtagRegex(): RegExp {
+	return new RegExp(HASHTAG_DETECTION_REGEX.source, 'g');
+}
+
+// 本文からタグを取り除く用。前後の空白ごと消せるよう、タグ本体を捕捉グループにする
+function createHashtagStripRegex(): RegExp {
+	return new RegExp(`[ \\t]*(${HASHTAG_DETECTION_REGEX.source})[ \\t]*`, 'g');
 }
 
 function trimTrailingPunctuation(url: string): string {
@@ -26,6 +38,70 @@ function extractFirstUrl(text: string): string | null {
 	const regex = new RegExp(URL_DETECTION_REGEX.source);
 	const match = regex.exec(text);
 	return match ? trimTrailingPunctuation(match[0]) : null;
+}
+
+/**
+ * 本文からハッシュタグを抽出する（先頭の # は除去）。
+ * Bluesky に facet として送るタグと同じ条件で抽出するため、履歴ノートの tags と
+ * 実際の投稿タグが一致する。大文字小文字違いの重複は最初の表記を残して除去する。
+ */
+function extractHashtags(text: string): string[] {
+	const regex = createHashtagRegex();
+	const seen = new Set<string>();
+	const tags: string[] = [];
+	let match: RegExpExecArray | null;
+	while ((match = regex.exec(text)) !== null) {
+		const tag = match[0].slice(1);
+		if (countGraphemes(tag) > MAX_TAG_LENGTH) continue;
+		const key = tag.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		tags.push(tag);
+	}
+	return tags;
+}
+
+/**
+ * 履歴ノートの本文からハッシュタグを取り除く。frontmatter の tags に昇格したタグだけを
+ * 対象にするため、tags に入らなかったタグ（長すぎる等）は本文に残る。
+ * タグだけで構成されていた行は行ごと削除し、元から空だった行は段落区切りとして残す。
+ */
+function stripHashtags(text: string, tags: string[]): string {
+	const promoted = new Set(tags.map((tag) => tag.toLowerCase()));
+	// 単語同士がくっつくのを避けたい欧文だけ空白を1つ残す（和文は詰める）
+	const needsSpace = (char: string | undefined) => char !== undefined && /[\x21-\x7E]/.test(char);
+	const kept: string[] = [];
+	for (const line of text.split('\n')) {
+		const stripped = line
+			.replace(createHashtagStripRegex(), (match: string, tagToken: string, offset: number, whole: string) => {
+				if (!promoted.has(tagToken.slice(1).toLowerCase())) return match;
+				return needsSpace(whole[offset - 1]) && needsSpace(whole[offset + match.length]) ? ' ' : '';
+			})
+			.trimEnd();
+		// タグ除去の結果だけで空になった行は落とす
+		if (stripped.trim() === '' && line.trim() !== '') continue;
+		kept.push(stripped);
+	}
+	return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * frontmatter に書き出すタグをYAMLとして安全な形にする。
+ * 数字始まりのタグ（例: 2026、1_000）は引用符で囲まないと数値として解釈される。
+ * タグに使える文字は HASHTAG_DETECTION_REGEX で制限されているため引用符の
+ * エスケープは不要。
+ */
+function toYamlTag(tag: string): string {
+	return /^[A-Za-z_\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(tag) ? tag : `"${tag}"`;
+}
+
+// 入力途中のURL（例: "https://"）は new URL() が例外を投げるため安全に解析する
+function parseUrlSafe(url: string): URL | null {
+	try {
+		return new URL(url);
+	} catch {
+		return null;
+	}
 }
 
 type SegmenterCtor = new (
@@ -91,6 +167,21 @@ type LocaleStrings = {
 	hotkeyConflictWarning: string;
 	duplicateHotkeys: string;
 	posting: string;
+	draftSelectTitle: string;
+	noDraftsFound: string;
+	draftFilterNote: string;
+	draftFilterUnposted: string;
+	draftTooLong: string;
+	draftLoadFailed: string;
+	draftPropertyLabel: string;
+	draftPropertyDesc: string;
+	draftValueLabel: string;
+	draftValueDesc: string;
+	postHistoryLabel: string;
+	postHistoryDesc: string;
+	postHistoryFolderLabel: string;
+	postHistoryFolderDesc: string;
+	postHistorySaveFailed: string;
 };
 
 // 追加: 設定用インターフェース & デフォルト値
@@ -99,18 +190,41 @@ interface BlueskyPluginSettings {
 	password: string;
 	networkTimeoutMs: number;
 	defaultHashtags: string;
+	draftProperty: string;
+	draftValue: string;
+	postHistoryEnabled: boolean;
+	postHistoryFolder: string;
 }
 
 const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	handle: '',
 	password: '',
 	networkTimeoutMs: 15000,
-	defaultHashtags: ''
+	defaultHashtags: '',
+	draftProperty: 'type',
+	draftValue: 'bluesky-draft',
+	postHistoryEnabled: false,
+	postHistoryFolder: 'Bluesky Posts'
 };
+
+// 履歴ノート(B)の種別を示す frontmatter 値
+const POSTED_FRONTMATTER_VALUE = 'bluesky-posted';
+// 投稿済みを示す真偽値プロパティ。Obsidian の Properties UI ではチェックボックスとして表示される。
+// 下書きノートは draftProperty の値を保ったままこれが true になり、下書き一覧から外れる
+const POSTED_CHECKBOX_PROPERTY = 'bluesky_posted';
+const MAX_POST_LENGTH = 300;
+
+type PostResult = { success: boolean; postUrl?: string };
+
+interface CreateRecordResponse {
+	uri: string;
+	cid: string;
+}
 
 // Bluesky API embed 関連型（復元）
 interface BlueskyBlobRef {
-	_type: 'blob';
+	// AT Protocol の blob ref は $type が必須。uploadBlob のレスポンスもこの形で返る
+	$type: 'blob';
 	ref: { $link: string };
 	mimeType: string;
 	size: number;
@@ -227,7 +341,22 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			hotkeyConflictNote: 'ホットキーが重複している場合は警告が表示されます。',
 			hotkeyConflictWarning: 'ホットキーが重複しています。',
 			duplicateHotkeys: '重複ホットキー',
-			posting: '投稿中...'
+			posting: '投稿中...',
+			draftSelectTitle: '下書き一覧',
+			noDraftsFound: '下書きが見つかりません',
+			draftFilterNote: '※ 表示条件',
+			draftFilterUnposted: '未チェック',
+			draftTooLong: '投稿内容が300字を超えています。編集してください。',
+			draftLoadFailed: '下書きの読み込みに失敗しました',
+			draftPropertyLabel: '下書きプロパティ名',
+			draftPropertyDesc: '下書きノートを識別するfrontmatterのキー名',
+			draftValueLabel: '下書き判定値',
+			draftValueDesc: '上記キーに対応する値。この値を持つノートが下書き一覧に表示されます',
+			postHistoryLabel: '投稿履歴を保存',
+			postHistoryDesc: '投稿成功時に本文・日時・URL入りのノートを自動作成します',
+			postHistoryFolderLabel: '履歴ノートの保存先',
+			postHistoryFolderDesc: '履歴ノートを作成するフォルダ（存在しなければ自動作成）',
+			postHistorySaveFailed: '投稿履歴の保存に失敗しました'
 		};
 	}
 	// Default to English
@@ -280,7 +409,22 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		hotkeyConflictNote: 'A warning will be shown if hotkeys conflict.',
 		hotkeyConflictWarning: 'Hotkey conflict detected.',
 		duplicateHotkeys: 'Duplicate hotkeys',
-		posting: 'Posting...'
+		posting: 'Posting...',
+		draftSelectTitle: 'Draft notes',
+		noDraftsFound: 'No drafts found',
+		draftFilterNote: 'Filter',
+		draftFilterUnposted: 'unchecked',
+		draftTooLong: 'Post content exceeds 300 characters. Please edit it before posting.',
+		draftLoadFailed: 'Failed to load drafts',
+		draftPropertyLabel: 'Draft property name',
+		draftPropertyDesc: 'Frontmatter key used to identify draft notes',
+		draftValueLabel: 'Draft property value',
+		draftValueDesc: 'Value for the key above. Notes with this value appear in the draft list',
+		postHistoryLabel: 'Save post history',
+		postHistoryDesc: 'Automatically create a note with the text, timestamp and URL after a successful post',
+		postHistoryFolderLabel: 'History note folder',
+		postHistoryFolderDesc: 'Folder to create history notes in (created automatically if missing)',
+		postHistorySaveFailed: 'Failed to save post history'
 	};
 }
 				// (Removed stray malformed code block that caused syntax errors)
@@ -340,14 +484,23 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		});
 
 		this.addCommand({
-			id: 'add-image',
-			name: 'Add image',
-			callback: () => {
-				if (this.activeModal && !this.activeModal.isPosting) {
-					this.activeModal.fileInput.click();
-				}
-			}
+			id: 'open-draft-composer',
+			name: 'Post from draft notes',
+			callback: () => this.openDraftSelectModal()
 		});
+
+		// 画像添付はデスクトップのみ対応
+		if (!Platform.isMobile) {
+			this.addCommand({
+				id: 'add-image',
+				name: 'Add image',
+				callback: () => {
+					if (this.activeModal && !this.activeModal.isPosting) {
+						this.activeModal.fileInput?.click();
+					}
+				}
+			});
+		}
 
 		this.addCommand({
 			id: 'toggle-emoji-picker',
@@ -361,6 +514,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 
 		// リボンアイコン（左サイドバー）
 		this.addRibbonIcon('send', 'Open post composer', () => this.openPostModal());
+		this.addRibbonIcon('file-text', 'Post from draft notes', () => this.openDraftSelectModal());
 	}
 
 	onunload(): void {}
@@ -408,7 +562,10 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				timer = window.setTimeout(() => reject(new Error('Request timed out')), duration);
 			});
 			try {
-				return await Promise.race([requestUrl(params), timeoutPromise]);
+				// throw: false にしないと 400+ で requestUrl が汎用エラーを投げてしまい、
+				// 呼び出し側のステータス判定（401 再ログイン・429 バックオフ）とAPIの
+				// エラーメッセージ抽出が働かなくなる
+				return await Promise.race([requestUrl({ ...params, throw: false }), timeoutPromise]);
 			} finally {
 				if (timer !== null) {
 					window.clearTimeout(timer);
@@ -503,11 +660,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				};
 				facets.push(linkFacet);
 			}
-			const hashtagRegex = /#[\w\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+/g;
+			const hashtagRegex = createHashtagRegex();
 			while ((match = hashtagRegex.exec(text)) !== null) {
 				const tag = match[0];
 				const tagWithoutHash = tag.slice(1);
-				if (countGraphemes(tagWithoutHash) > 64) continue;
+				if (countGraphemes(tagWithoutHash) > MAX_TAG_LENGTH) continue;
 				const byteStart = encoder.encode(text.slice(0, match.index)).length;
 				const byteEnd = byteStart + encoder.encode(tag).length;
 				const tagFacet: Facet = {
@@ -576,17 +733,17 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			throw new Error('画像アップロードに失敗しました');
 		}
 
-		async postToBluesky(text: string, embed?: Embed): Promise<boolean> {
+		async postToBluesky(text: string, embed?: Embed): Promise<PostResult> {
 			if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) {
 				new Notice(this.getLocale().postContentEmpty);
-				return false;
+				return { success: false };
 			}
-			if (countGraphemes(text) > 300) {
+			if (countGraphemes(text) > MAX_POST_LENGTH) {
 				new Notice(this.getLocale().postTooLong);
-				return false;
+				return { success: false };
 			}
 			if (!this.accessJwt || !this.did) {
-				if (!(await this.login())) return false;
+				if (!(await this.login())) return { success: false };
 			}
 			const record: BlueskyPostRecord = {
 				text,
@@ -598,7 +755,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			if (embed) record.embed = embed;
 			try {
 				let refreshedAuth = false;
-				await this.retryWithBackoff(
+				const createdUri = await this.retryWithBackoff(
 					async () => {
 						const response = await this.requestWithTimeout({
 							url: 'https://bsky.social/xrpc/com.atproto.repo.createRecord',
@@ -616,6 +773,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 						if (!this.isSuccessStatus(response.status)) {
 							throw this.createHttpError(response, `${this.getLocale().postFailed}: ${response.status}`);
 						}
+						return (response.json as CreateRecordResponse | undefined)?.uri;
 					},
 					{
 						maxRetries: 3,
@@ -643,7 +801,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 					}
 				);
 				new Notice(this.getLocale().postSuccess);
-				return true;
+				return { success: true, postUrl: this.buildPostUrl(createdUri) };
 			} catch (error) {
 				const isTimeout = error instanceof Error && error.message === 'Request timed out';
 				if (isTimeout) {
@@ -652,24 +810,135 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 					const message = error instanceof Error ? error.message : String(error);
 					new Notice(`${this.getLocale().postFailed}: ${message}`);
 				}
-				return false;
+				return { success: false };
 			}
+		}
+
+		/**
+		 * createRecord が返す at:// URI から表示用の bsky.app URL を組み立てる
+		 * at://{did}/app.bsky.feed.post/{rkey} → https://bsky.app/profile/{handle}/post/{rkey}
+		 */
+		private buildPostUrl(uri: string | undefined): string | undefined {
+			if (!uri) return undefined;
+			const rkey = uri.split('/').pop();
+			const handle = this.settings.handle?.trim();
+			if (!rkey || !handle) return undefined;
+			return `https://bsky.app/profile/${handle}/post/${rkey}`;
 		}
 
 		/**
 		 * エディタの選択文字列（なければ先頭500文字）を初期値として投稿モーダルを開く
 		 */
-		openPostModal() {
+		openPostModal(initialText = '', sourceFile: TFile | null = null) {
 			if (this.activeModal) return;
-			// 投稿欄デフォルトは常に空欄にする要求のため、エディタ内容からの初期値取得を廃止
-			const initial = '';
 			// 予備ログイン（失敗しても無視）
 			if (!this.accessJwt) {
 				void this.login().catch(() => {});
 			}
-			const modal = new PostModal(this.app, this, initial);
+			const modal = new PostModal(this.app, this, initialText, sourceFile);
 			this.activeModal = modal;
 			modal.open();
+		}
+
+		/**
+		 * 下書き一覧モーダルを開く
+		 */
+		openDraftSelectModal() {
+			if (this.activeModal) return;
+			if (!this.accessJwt) {
+				void this.login().catch(() => {});
+			}
+			new DraftSelectModal(this.app, this).open();
+		}
+
+		/**
+		 * 投稿成功後の記録処理。
+		 * 下書き由来の投稿は元ノートを投稿済みに更新し（C）、履歴ノートは作らない。
+		 * それ以外は設定が有効なら履歴ノートを作成する（B）。
+		 * 失敗しても投稿自体は成功扱いのまま、通知だけ出す。
+		 */
+		async recordPostResult(text: string, postUrl: string | undefined, sourceFile: TFile | null): Promise<void> {
+			try {
+				if (sourceFile) {
+					await this.markDraftAsPosted(sourceFile, postUrl);
+					return;
+				}
+				if (!this.settings.postHistoryEnabled) return;
+				await this.createPostHistoryNote(text, postUrl);
+			} catch (error) {
+				console.error('[Post-To-Bluesky] Failed to record post:', error);
+				new Notice(this.getLocale().postHistorySaveFailed);
+			}
+		}
+
+		/** 履歴ノート・frontmatter 用のローカル日時文字列 (例: 2026-07-25T17:30:00) */
+		private formatLocalTimestamp(date: Date): string {
+			const pad = (n: number) => String(n).padStart(2, '0');
+			return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+				+ `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+		}
+
+		/** 履歴ノートのファイル名ベース (例: 2026-07-25 1730) */
+		private formatFileStamp(date: Date): string {
+			const pad = (n: number) => String(n).padStart(2, '0');
+			return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+				+ ` ${pad(date.getHours())}${pad(date.getMinutes())}`;
+		}
+
+		/** 投稿履歴ノートを作成する（B） */
+		private async createPostHistoryNote(text: string, postUrl: string | undefined): Promise<void> {
+			const now = new Date();
+			const rawFolder = this.settings.postHistoryFolder?.trim() || DEFAULT_SETTINGS.postHistoryFolder;
+			const folderPath = rawFolder === '/' ? '' : normalizePath(rawFolder);
+			if (folderPath && !this.app.vault.getFolderByPath(folderPath)) {
+				await this.app.vault.createFolder(folderPath);
+			}
+
+			const base = this.formatFileStamp(now);
+			const prefix = folderPath ? `${folderPath}/` : '';
+			let path = normalizePath(`${prefix}${base}.md`);
+			for (let i = 2; this.app.vault.getAbstractFileByPath(path); i++) {
+				path = normalizePath(`${prefix}${base} (${i}).md`);
+			}
+
+			const tags = extractHashtags(text);
+			// タグは frontmatter の tags に持たせるので本文からは取り除く
+			const body = tags.length > 0 ? stripHashtags(text, tags) : text;
+			const frontmatter = [
+				'---',
+				`${this.settings.draftProperty || DEFAULT_SETTINGS.draftProperty}: ${POSTED_FRONTMATTER_VALUE}`,
+				`${POSTED_CHECKBOX_PROPERTY}: true`,
+				`posted_at: ${this.formatLocalTimestamp(now)}`,
+				...(postUrl ? [`url: ${postUrl}`] : []),
+				...(tags.length > 0 ? ['tags:', ...tags.map((tag) => `  - ${toYamlTag(tag)}`)] : []),
+				'---'
+			].join('\n');
+			await this.app.vault.create(path, `${frontmatter}\n${body}\n`);
+		}
+
+		/**
+		 * 下書きノートの frontmatter を投稿済みに更新する（C）。
+		 * draftProperty から下書き値を取り除き、投稿済みかどうかはチェックボックス用の
+		 * 真偽値プロパティで表す。下書き値以外の要素（利用者独自のタグ等）は残す。
+		 */
+		private async markDraftAsPosted(file: TFile, postUrl: string | undefined): Promise<void> {
+			const key = this.settings.draftProperty || DEFAULT_SETTINGS.draftProperty;
+			const draftValue = this.settings.draftValue;
+			const postedAt = this.formatLocalTimestamp(new Date());
+			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+				const current: unknown = frontmatter[key];
+				if (Array.isArray(current)) {
+					const rest = current.filter((v) => String(v) !== draftValue);
+					// 下書き値しか入っていなかった場合はキーごと削除する
+					if (rest.length > 0) frontmatter[key] = rest;
+					else delete frontmatter[key];
+				} else if (current !== undefined && String(current) === draftValue) {
+					delete frontmatter[key];
+				}
+				frontmatter[POSTED_CHECKBOX_PROPERTY] = true;
+				frontmatter.posted_at = postedAt;
+				if (postUrl) frontmatter.url = postUrl;
+			});
 		}
 	}
 
@@ -683,7 +952,8 @@ class PostModal extends Modal {
 	emojiPickerContainer: HTMLElement | null = null;
 	emojiButtonEl!: HTMLElement; // 絵文字ボタン参照
 	charCountEl!: HTMLElement;
-	fileInput!: HTMLInputElement;
+	fileInput: HTMLInputElement | null = null; // モバイルでは画像添付非対応のため null
+	sourceFile: TFile | null = null; // 下書きノート由来の投稿のみ設定される
 	selectedImages: File[] = [];
 	linkPreviewData: LinkPreviewData | null = null;
 	pendingLinkPreviewUrl: string | null = null;
@@ -693,10 +963,11 @@ class PostModal extends Modal {
 	outsideClickHandler?: (e: MouseEvent) => void;
 	private repositionEmojiPickerBound?: () => void;
 
-	constructor(app: App, plugin: BlueskyPlugin, initialText = '') {
+	constructor(app: App, plugin: BlueskyPlugin, initialText = '', sourceFile: TFile | null = null) {
 		super(app);
 		this.plugin = plugin;
 		this.initialText = initialText;
+		this.sourceFile = sourceFile;
 	}
 
 	toggleEmojiPicker(): void {
@@ -757,18 +1028,23 @@ class PostModal extends Modal {
 		}
 		this.textArea = mainEl.createEl('textarea', { cls: 'bluesky-textarea', attr: { placeholder: this.plugin.getLocale().placeholderText } });
 
-		// 要求により初期テキストは常に空欄。ハッシュタグ自動挿入もしない。
-		this.textArea.value = '';
-		// デフォルトハッシュタグは空欄に続けて自動挿入（復活要求）
-		if (this.plugin.settings.defaultHashtags?.trim()) {
+		// 下書きから開いた場合のみ本文をセット。通常起動時は空欄（＋デフォルトハッシュタグ）。
+		if (this.initialText) {
+			this.textArea.value = this.initialText;
+		} else if (this.plugin.settings.defaultHashtags?.trim()) {
+			// デフォルトハッシュタグは空欄に続けて自動挿入（復活要求）
 			this.textArea.value = this.plugin.settings.defaultHashtags.trim();
+		} else {
+			this.textArea.value = '';
 		}
 
 		// モーダル表示時にカーソルをテキストエリア先頭（左端）へ移動
 		// （ハッシュタグ挿入済みでも先頭に配置する要求仕様）
+		// 下書き本文をセットした場合のみ、続けて編集できるよう末尾へ置く
+		const caretPos = this.initialText ? this.textArea.value.length : 0;
 		window.setTimeout(() => {
 			this.textArea.focus();
-			this.textArea.setSelectionRange(0, 0);
+			this.textArea.setSelectionRange(caretPos, caretPos);
 		}, 0);
 
 		this.linkPreviewContainer = contentEl.createDiv({ cls: 'bluesky-preview-container' });
@@ -781,15 +1057,19 @@ class PostModal extends Modal {
 		const footerRowEl = footerEl.createDiv({ cls: 'bluesky-footer-row' });
 		const actionsEl = footerRowEl.createDiv({ cls: 'bluesky-actions' });
 
-		this.fileInput = contentEl.createEl('input', { cls: 'bluesky-hidden', attr: { type: 'file', accept: 'image/*' } });
-		this.fileInput.multiple = true;
-		this.fileInput.onchange = (e) => this.handleFileSelect(e);
+		// 画像添付はデスクトップのみ。モバイルでは入力要素とボタンを作らない
+		if (!Platform.isMobile) {
+			const fileInput = contentEl.createEl('input', { cls: 'bluesky-hidden', attr: { type: 'file', accept: 'image/*' } });
+			fileInput.multiple = true;
+			fileInput.onchange = (e) => this.handleFileSelect(e);
+			this.fileInput = fileInput;
 
-		// 画像追加ボタン
-		new ButtonComponent(actionsEl)
-			.setIcon('image-file')
-			.setTooltip(`${this.plugin.getLocale().addImage} (最大4枚)`)
-			.onClick(() => this.fileInput.click());
+			// 画像追加ボタン
+			new ButtonComponent(actionsEl)
+				.setIcon('image-file')
+				.setTooltip(`${this.plugin.getLocale().addImage} (最大4枚)`)
+				.onClick(() => fileInput.click());
+		}
 
 		// 絵文字ボタンのみ（ピッカー本体は body 直下に生成）
 		const emojiWrapper = actionsEl.createDiv({ cls: 'bluesky-emoji-wrapper' });
@@ -803,8 +1083,14 @@ class PostModal extends Modal {
 		this.charCountEl = footerRowEl.createDiv({ cls: 'bluesky-char-count' });
 
 		this.initExternalEmojiPicker();
-		this.textArea.addEventListener('input', () => { this.updateCharCount(); });
+		this.textArea.addEventListener('input', () => {
+			this.updateCharCount();
+			// URL入力に追従してリンクプレビュー（external embed）を更新する
+			this.debounceUpdatePreviews();
+		});
 		this.updateCharCount();
+		// 下書き本文など初期テキストにURLが含まれる場合もプレビューを取得する
+		if (this.textArea.value) this.debounceUpdatePreviews();
 		// 初期表示では絵文字ピッカーは閉じたまま
 		this.setupModalHotkeys();
 	}
@@ -823,7 +1109,7 @@ class PostModal extends Modal {
 		const actions: Record<string, () => void> = {
 			'submit-post': () => { if (!this.isPosting) void this.handlePost(); },
 			'cancel-post': () => this.close(),
-			'add-image': () => { if (!this.isPosting) this.fileInput.click(); },
+			'add-image': () => { if (!this.isPosting) this.fileInput?.click(); },
 			'toggle-emoji-picker': () => this.toggleEmojiPicker(),
 		};
 
@@ -918,7 +1204,7 @@ class PostModal extends Modal {
 		this.selectedImages.push(...uniques);
 		this.updateImagePreviews();
 		// 同一ファイル再選択のためにクリア
-		this.fileInput.value = '';
+		if (this.fileInput) this.fileInput.value = '';
 	}
 
 	updateImagePreviews() {
@@ -953,8 +1239,8 @@ class PostModal extends Modal {
 
 	updateCharCount() {
 		const charCount = countGraphemes(this.textArea.value);
-		this.charCountEl.textContent = `${charCount}/300`;
-		const isOverLimit = charCount > 300;
+		this.charCountEl.textContent = `${charCount}/${MAX_POST_LENGTH}`;
+		const isOverLimit = charCount > MAX_POST_LENGTH;
 		this.charCountEl.toggleClass('bluesky-over-limit', isOverLimit);
 		this.postButton.setDisabled(isOverLimit);
 	}
@@ -968,7 +1254,9 @@ class PostModal extends Modal {
 
 	async updateLinkPreview() {
 		if (this.selectedImages.length > 0) return;
-		const url = extractFirstUrl(this.textArea.value);
+		const detected = extractFirstUrl(this.textArea.value);
+		// 入力途中の不正なURLは未検出扱いにする
+		const url = detected && parseUrlSafe(detected) ? detected : null;
 		if (url && url === this.linkPreviewData?.url) return;
 		this.linkPreviewContainer.empty();
 		this.linkPreviewData = null;
@@ -1011,7 +1299,7 @@ class PostModal extends Modal {
 			};
 		} catch (error) {
 			console.error('Failed to fetch link preview:', error);
-			return { url, title: url, domain: new URL(url).hostname };
+			return { url, title: url, domain: parseUrlSafe(url)?.hostname };
 		}
 	}
 
@@ -1085,13 +1373,8 @@ class PostModal extends Modal {
 					const ctEntry = Object.entries(imgResponse.headers).find(([k]) => k.toLowerCase() === 'content-type');
 					const mimeType = (ctEntry?.[1] as string) || 'image/jpeg';
 					const uploadedImage = await this.plugin.uploadBlob(blob, mimeType);
-					thumb = {
-						// フィールド名を $type から _type に統一
-						_type: 'blob' as const,
-						ref: uploadedImage.blob.ref,
-						mimeType: uploadedImage.blob.mimeType,
-						size: uploadedImage.blob.size
-					};
+					// uploadBlob のレスポンスをそのまま使う（$type を落とすと createRecord が 400 になる）
+					thumb = uploadedImage.blob;
 				} catch (error) {
 					console.error('Image upload failed:', error);
 				}
@@ -1107,7 +1390,9 @@ class PostModal extends Modal {
 			};
 		}
 
-			if (await this.plugin.postToBluesky(text, embed)) {
+			const result = await this.plugin.postToBluesky(text, embed);
+			if (result.success) {
+				await this.plugin.recordPostResult(text, result.postUrl, this.sourceFile);
 				this.close();
 			} else if (this.plugin.activeModal === this) {
 				this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
@@ -1131,6 +1416,148 @@ class PostModal extends Modal {
 			console.debug('[Post-To-Bluesky] Failed to release preview blobs', error);
 		}
 		this.contentEl.empty();
+	}
+}
+
+/**
+ * frontmatter で下書きと判定されたノートの一覧を表示し、選択したノートの本文で
+ * PostModal を開くモーダル。
+ */
+class DraftSelectModal extends Modal {
+	plugin: BlueskyPlugin;
+	private isRendering = false;
+
+	constructor(app: App, plugin: BlueskyPlugin) {
+		super(app);
+		this.plugin = plugin;
+	}
+
+	/** frontmatter の値が下書き判定値と一致するか（配列型も許容） */
+	private matchesDraftValue(value: unknown): boolean {
+		const target = this.plugin.settings.draftValue;
+		if (!target || value === undefined || value === null) return false;
+		if (Array.isArray(value)) return value.some((v) => String(v) === target);
+		return String(value) === target;
+	}
+
+	getDraftFiles(): TFile[] {
+		const key = this.plugin.settings.draftProperty || DEFAULT_SETTINGS.draftProperty;
+		return this.app.vault.getMarkdownFiles()
+			.filter((file) => {
+				const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+				// 投稿済みチェックが入っているノートは一覧から外す（チェックを外せば再び表示される）
+				if (frontmatter?.[POSTED_CHECKBOX_PROPERTY] === true) return false;
+				return this.matchesDraftValue(frontmatter?.[key]);
+			})
+			.sort((a, b) => b.stat.mtime - a.stat.mtime);
+	}
+
+	/** 投稿本文として使うため frontmatter ブロックを除去する */
+	stripFrontmatter(content: string, file: TFile): string {
+		const end = this.app.metadataCache.getFileCache(file)?.frontmatterPosition?.end.offset;
+		if (typeof end === 'number' && end <= content.length) {
+			return content.slice(end).trim();
+		}
+		return content.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/, '').trim();
+	}
+
+	renderDraftItem(listEl: HTMLElement, file: TFile, body: string): void {
+		const count = countGraphemes(body);
+		const itemEl = listEl.createDiv({ cls: 'bluesky-draft-item', attr: { role: 'button', tabindex: '0' } });
+		setIcon(itemEl.createSpan({ cls: 'bluesky-draft-icon' }), 'file-text');
+		itemEl.createSpan({ cls: 'bluesky-draft-name', text: file.basename });
+		const countEl = itemEl.createSpan({ cls: 'bluesky-draft-count', text: `${count}/${MAX_POST_LENGTH}` });
+		countEl.toggleClass('bluesky-over-limit', count > MAX_POST_LENGTH);
+
+		const select = () => this.selectDraft(file, body, count);
+		itemEl.addEventListener('click', select);
+		itemEl.addEventListener('keydown', (e: KeyboardEvent) => {
+			if (e.key === 'Enter' || e.key === ' ') {
+				e.preventDefault();
+				select();
+			}
+		});
+	}
+
+	private selectDraft(file: TFile, body: string, count: number): void {
+		if (count > MAX_POST_LENGTH) {
+			new Notice(`${this.plugin.getLocale().draftTooLong} (${count}/${MAX_POST_LENGTH})`);
+		}
+		this.close();
+		this.plugin.openPostModal(body, file);
+	}
+
+	private async renderDrafts(): Promise<void> {
+		const locale = this.plugin.getLocale();
+		const files = this.getDraftFiles();
+		if (files.length === 0) {
+			new Notice(locale.noDraftsFound);
+			this.close();
+			return;
+		}
+
+		const listEl = this.contentEl.createDiv({ cls: 'bluesky-draft-list' });
+		try {
+			for (const file of files) {
+				const content = await this.app.vault.cachedRead(file);
+				// 読み込み中に閉じられた場合は描画を中断
+				if (!this.isRendering) return;
+				this.renderDraftItem(listEl, file, this.stripFrontmatter(content, file));
+			}
+		} catch (error) {
+			console.error('[Post-To-Bluesky] Failed to load draft notes:', error);
+			new Notice(locale.draftLoadFailed);
+			return;
+		}
+
+		const key = this.plugin.settings.draftProperty || DEFAULT_SETTINGS.draftProperty;
+		this.contentEl.createDiv({
+			cls: 'bluesky-draft-note',
+			text: `${locale.draftFilterNote}: ${key} = ${this.plugin.settings.draftValue}`
+				+ ` / ${POSTED_CHECKBOX_PROPERTY} ${locale.draftFilterUnposted}`
+		});
+	}
+
+	onOpen(): void {
+		this.contentEl.empty();
+		this.contentEl.addClass('bluesky-draft-modal');
+		this.setTitle(this.plugin.getLocale().draftSelectTitle);
+		this.isRendering = true;
+		void this.renderDrafts();
+	}
+
+	onClose(): void {
+		this.isRendering = false;
+		this.contentEl.empty();
+	}
+}
+
+/**
+ * vault 内フォルダのサジェスト付き入力。
+ * Obsidian 1.13+ では宣言的設定の control type:'folder' が同等機能を持つため、
+ * このクラスは display() フォールバック（1.13未満）専用。
+ */
+class FolderSuggest extends AbstractInputSuggest<TFolder> {
+	private onSelectFolder: (path: string) => void;
+
+	constructor(app: App, inputEl: HTMLInputElement, onSelectFolder: (path: string) => void) {
+		super(app, inputEl);
+		this.onSelectFolder = onSelectFolder;
+	}
+
+	protected getSuggestions(query: string): TFolder[] {
+		const q = query.toLowerCase();
+		return this.app.vault.getAllFolders(true).filter((folder) => folder.path.toLowerCase().includes(q));
+	}
+
+	renderSuggestion(folder: TFolder, el: HTMLElement): void {
+		el.setText(folder.path);
+	}
+
+	selectSuggestion(folder: TFolder): void {
+		this.setValue(folder.path);
+		this.onSelectFolder(folder.path);
+		this.close();
 	}
 }
 
@@ -1173,6 +1600,33 @@ class BlueskySettingTab extends PluginSettingTab {
 				name: locale.hashtagsLabel,
 				desc: locale.hashtagsDesc,
 				control: { type: 'text', key: 'defaultHashtags', placeholder: locale.hashtagsPlaceholder }
+			},
+			{
+				name: locale.draftPropertyLabel,
+				desc: locale.draftPropertyDesc,
+				control: { type: 'text', key: 'draftProperty', placeholder: DEFAULT_SETTINGS.draftProperty, defaultValue: DEFAULT_SETTINGS.draftProperty }
+			},
+			{
+				name: locale.draftValueLabel,
+				desc: locale.draftValueDesc,
+				control: { type: 'text', key: 'draftValue', placeholder: DEFAULT_SETTINGS.draftValue, defaultValue: DEFAULT_SETTINGS.draftValue }
+			},
+			{
+				name: locale.postHistoryLabel,
+				desc: locale.postHistoryDesc,
+				control: { type: 'toggle', key: 'postHistoryEnabled', defaultValue: false }
+			},
+			{
+				name: locale.postHistoryFolderLabel,
+				desc: locale.postHistoryFolderDesc,
+				control: {
+					type: 'folder',
+					key: 'postHistoryFolder',
+					placeholder: DEFAULT_SETTINGS.postHistoryFolder,
+					defaultValue: DEFAULT_SETTINGS.postHistoryFolder,
+					includeRoot: true,
+					disabled: () => !this.plugin.settings.postHistoryEnabled
+				}
 			}
 		];
 	}
@@ -1183,6 +1637,8 @@ class BlueskySettingTab extends PluginSettingTab {
 			value = Number.isFinite(n) ? Math.min(Math.max(Math.round(n), 1000), 60000) : 15000;
 		}
 		(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+		// 履歴トグルの状態は保存先フォルダ欄の disabled 判定に使われるため再評価させる
+		if (key === 'postHistoryEnabled') this.refreshDomState();
 		return this.plugin.saveSettings();
 	}
 
@@ -1241,5 +1697,60 @@ class BlueskySettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		const locale = this.plugin.getLocale();
+
+		new Setting(containerEl)
+			.setName(locale.draftPropertyLabel)
+			.setDesc(locale.draftPropertyDesc)
+			.addText(text => text
+				.setPlaceholder(DEFAULT_SETTINGS.draftProperty)
+				.setValue(this.plugin.settings.draftProperty)
+				.onChange(async (value) => {
+					this.plugin.settings.draftProperty = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName(locale.draftValueLabel)
+			.setDesc(locale.draftValueDesc)
+			.addText(text => text
+				.setPlaceholder(DEFAULT_SETTINGS.draftValue)
+				.setValue(this.plugin.settings.draftValue)
+				.onChange(async (value) => {
+					this.plugin.settings.draftValue = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName(locale.postHistoryLabel)
+			.setDesc(locale.postHistoryDesc)
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.postHistoryEnabled)
+				.onChange(async (value) => {
+					this.plugin.settings.postHistoryEnabled = value;
+					await this.plugin.saveSettings();
+					// 保存先フォルダ欄の有効/無効を切り替えるため再描画する
+					this.display();
+				}));
+
+		const historyEnabled = this.plugin.settings.postHistoryEnabled;
+		new Setting(containerEl)
+			.setName(locale.postHistoryFolderLabel)
+			.setDesc(locale.postHistoryFolderDesc)
+			.setDisabled(!historyEnabled)
+			.addText(text => {
+				text.setPlaceholder(DEFAULT_SETTINGS.postHistoryFolder)
+					.setValue(this.plugin.settings.postHistoryFolder)
+					.setDisabled(!historyEnabled)
+					.onChange(async (value) => {
+						this.plugin.settings.postHistoryFolder = value;
+						await this.plugin.saveSettings();
+					});
+				new FolderSuggest(this.app, text.inputEl, (path) => {
+					text.setValue(path);
+					this.plugin.settings.postHistoryFolder = path;
+					void this.plugin.saveSettings();
+				});
+			});
 	}
 }
