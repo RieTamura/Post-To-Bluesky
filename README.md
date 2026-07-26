@@ -6,28 +6,34 @@
 
 ---
 
-**Version / バージョン**: 0.1.0
+**Version / バージョン**: 0.2.0
 
 **Features (EN)**:
 
 - Post to Bluesky from Obsidian
-- Attach up to 4 images
+- Post from draft notes in your vault
+- Automatic post history notes
+- Desktop and mobile
+- Attach up to 4 images (desktop only)
 - Emoji picker
 - Default hashtags
 
 **機能概要 (JP)**:
 
 - ObsidianからBlueskyへ投稿
-- 画像最大4枚添付
+- vault内の下書きノートから投稿
+- 投稿履歴ノートの自動作成
+- デスクトップ・モバイル両対応
+- 画像最大4枚添付（デスクトップのみ）
 - 絵文字ピッカー
 - デフォルトハッシュタグ設定
 
 ---
 
 ObsidianからBlueskyへ投稿できるプラグインです。
-Images・Emoji対応
+下書きノート・投稿履歴・Images・Emoji対応
 
-Post to Bluesky with optional images & emoji.
+Post to Bluesky from notes, with post history, images & emoji.
 
 詳しい使い方・設定手順は各言語のREADMEをご覧ください。
 
@@ -59,11 +65,15 @@ Post to Bluesky with optional images & emoji.
 2. Open the command palette and run **Open post composer**.
 3. Write your post, optionally attach up to 4 images or emoji, and select **Post**.
 
+To post from a note, add `type: bluesky-draft` to its frontmatter and run **Post from draft notes**.
+
 **JP:**
 
 1. **設定 → Post To Bluesky** で Bluesky のハンドルと[アプリパスワード](https://bsky.app/settings/app-passwords)を入力します。
 2. コマンドパレットから **Open post composer** を実行して投稿モーダルを開きます。
 3. 本文を入力し、必要に応じて画像(最大4枚)や絵文字を追加して **投稿** を押します。
+
+ノートから投稿する場合は、frontmatter に `type: bluesky-draft` を書いて **Post from draft notes** を実行します。
 
 詳細な設定項目は [日本語 README](./README_JA.md) / [English README](./README_EN.md) を参照してください。
 
@@ -81,9 +91,10 @@ Post to Bluesky with optional images & emoji.
 
 ## Roadmap / ロードマップ
 
-- Mobile support / モバイル版対応
+- ~~Mobile support / モバイル版対応~~ (v0.2.0)
+- ~~Obsidian Bases integration (save posts and hashtags) / Obsidian Bases対応（投稿文やハッシュタグを記録）~~ (v0.2.0)
+- Base file generation for drafts and post history / 下書き・投稿履歴用のBaseファイル自動生成
 - Thread support / スレッド対応
-- Obsidian Bases integration (save posts and hashtags) / Obsidian Bases対応（投稿文やハッシュタグを記録）
 
 ---
 

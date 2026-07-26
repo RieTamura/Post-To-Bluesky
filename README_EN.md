@@ -10,9 +10,27 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 
 - **Create Post**: Open the post modal to compose freely and send to Bluesky
 
+### 📄 Post from Draft Notes
+
+- Use any note in your vault as a draft
+- Notes with `type: bluesky-draft` in their frontmatter appear in the draft list
+- The list shows a character count badge (red when over 300)
+- Posting updates the draft note itself to a posted state (see below)
+
+### 📋 Automatic Post History Notes
+
+- Creates a note with the text, timestamp, post URL and tags after a successful post (off by default)
+- Hashtags in the text are moved to the `tags` frontmatter property
+- The destination folder is picked through an input with folder suggestions
+
+### 📱 Mobile Support
+
+- Works in the Obsidian mobile app on iOS and Android
+- Only the image attachment UI is hidden on mobile; every text posting feature works
+
 ### 🖼️ Image Attachment
 
-- Attach up to 4 images
+- Attach up to 4 images (desktop only)
 - Drag & drop supported
 - Automatic aspect ratio handling
 
@@ -28,6 +46,8 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 - Default hashtags
 - Network timeout
 - Custom hotkeys
+- Draft detection rule (frontmatter key and value)
+- Post history saving and its destination folder
 
 ### ⌨️ Hotkeys
 
@@ -83,6 +103,67 @@ npm run dev
 - Use the Command Palette: "Open post composer"
 - Click the ribbon icon (send icon)
 
+### 2-1. Posting from a Draft Note
+
+1. Add the draft property to any note's frontmatter:
+
+   ```yaml
+   ---
+   type: bluesky-draft
+   ---
+   Write your post here.
+   ```
+
+   An array value works too (e.g. `type: [bluesky-draft, note]`).
+   Both the key and the value are configurable in settings.
+
+2. Run "Post from draft notes" from the Command Palette, or click the
+   ribbon icon (document icon).
+3. Pick a note from the draft list. Its body (frontmatter stripped) is loaded into
+   the post modal. If it exceeds 300 characters you get a warning — edit it in the
+   modal before posting.
+4. After a successful post, the draft note's frontmatter is updated:
+
+   ```yaml
+   ---
+   type:                      # bluesky-draft is removed
+     - note                   # other values are kept
+   bluesky_posted: true       # rendered as a checkbox
+   posted_at: 2026-07-26T17:30:00
+   url: https://bsky.app/profile/xxx.bsky.social/post/3kabc...
+   ---
+   ```
+
+   Notes with `bluesky_posted` checked disappear from the draft list. If the draft
+   value was the only value, the key is removed entirely.
+
+   Note that posting from a draft does **not** create a separate history note — the
+   draft note itself becomes the record, so a single post never produces two notes.
+
+### 2-2. Automatic Post History Notes
+
+Turn on "Save post history" in settings and every post made directly from the post
+modal creates one note in the destination folder.
+
+```yaml
+---
+type: bluesky-posted
+bluesky_posted: true
+posted_at: 2026-07-26T17:30:00
+url: https://bsky.app/profile/xxx.bsky.social/post/3kabc...
+tags:
+  - Obsidian
+---
+The posted text is kept here.
+```
+
+- The file name is generated from the timestamp (e.g. `2026-07-26 1730.md`)
+- Hashtags are moved to `tags` and stripped from the body, so the note body is not a
+  byte-for-byte copy of what was posted. Follow `url` for the original
+- The destination folder is created automatically if it does not exist
+- If saving the history fails, the post is still treated as successful and only a
+  notice is shown
+
 ### 3. Editing a Post
 
 - Edit text freely
@@ -99,8 +180,9 @@ npm run dev
 
 ### Environment
 
-- **Obsidian**: 0.15.0+
-- **Platforms**: Desktop (Windows, macOS, Linux)
+- **Obsidian**: 1.8.7+
+- **Platforms**: Desktop (Windows, macOS, Linux) and mobile (iOS, Android)
+  - Image attachment is unavailable on mobile
 - **Language**: TypeScript
 
 ### Key Technologies
@@ -123,7 +205,20 @@ npm run dev
 - **Handle**: Your Bluesky handle (e.g. `@username.bsky.social`)
 - **App Password**: Bluesky app password (app-specific)
 - **Default Hashtags**: Automatically appended hashtags
+  - Not inserted when composing from a draft note, to avoid eating into the 300-character limit
 - **Network Timeout**: Request timeout (ms)
+
+### Drafts
+
+- **Draft property name**: Frontmatter key used to identify draft notes (default: `type`)
+- **Draft property value**: Value for the key above. Notes with this value appear in the draft list (default: `bluesky-draft`)
+
+### Post History
+
+- **Save post history**: Create a history note after a successful post (default: off)
+- **History note folder**: Folder to create history notes in (default: `Bluesky Posts`)
+  - An input with vault folder suggestions. A folder name that does not exist yet is created when posting
+  - Greyed out while "Save post history" is off
 
 ### Hotkeys
 
@@ -160,6 +255,13 @@ npm run dev
 2. **Post Fails**: Check network & Bluesky status
 
 3. **Hotkeys Don't Work**: Verify your hotkeys are configured correctly in settings
+
+4. **A note is missing from the draft list**: Check these two things
+   - The frontmatter key and value match your settings (`type: bluesky-draft` by default)
+   - `bluesky_posted` is not checked. Posted notes are excluded from the list. To treat
+     one as a draft again, uncheck `bluesky_posted` and add `bluesky-draft` back to `type`
+
+5. **Cannot attach images on mobile**: This is by design — the image UI is hidden on mobile
 
 ### Logs
 
@@ -201,9 +303,49 @@ Released under the 0BSD license.
 - **Issues**: [GitHub Issues](https://github.com/RieTamura/Post-To-Bluesky/issues)
 - **Sponsor**: [GitHub Sponsors](https://github.com/sponsors/RieTamura)
 
+## Known Limitations
+
+- Up to 4 images per post (Bluesky limit)
+- Image attachment is unavailable on mobile
+- 300 characters per post (an error is shown before sending if exceeded)
+- No automatic retry on rate limit errors — you get a notice and resend after waiting
+
 ## Changelog
 
-### v1.0.0
+### v0.2.0
+
+- Mobile support (`isDesktopOnly: false`). Only the image attachment UI is hidden on mobile
+- Added posting from draft notes ("Post from draft notes" command and ribbon icon)
+- Added automatic post history notes (off by default). Hashtags are moved to `tags`
+- Posting from a draft adds `bluesky_posted`, `posted_at` and `url` to that note and
+  removes the draft value
+- Added four settings (draft property name, draft property value, save post history,
+  history note folder)
+- Fixed: link previews were not refreshed while typing
+- Fixed: posts containing a link with a thumbnail failed to send
+- Fixed: re-login on expired auth, rate limit retry and detailed API error messages
+  were never reached
+
+### v0.1.6 (2026-07-25)
+
+- Addressed Obsidian community plugin review feedback (timer handling, declarative settings API)
+- Added a release workflow
+
+### v0.1.5 (2026-03-09)
+
+- Hotkeys can be assigned to each action in the post modal
+
+### v0.1.2 – v0.1.4 (2026-03-09)
+
+- Fixed hotkey commands not appearing in Obsidian's hotkey settings
+- Prevented double submission while posting and multiple modal instances
+
+### v0.1.1 (2026-02-11)
+
+- Addressed Obsidian community plugin review feedback
+- Refactored localization handling (dropped the external locale files)
+
+### v0.1.0 (2025-10-15)
 
 - Initial release
 - Core posting functionality
