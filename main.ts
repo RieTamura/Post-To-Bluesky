@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Platform, AbstractInputSuggest, normalizePath, requireApiVersion, TFile, TFolder, Modifier } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Platform, AbstractInputSuggest, normalizePath, requireApiVersion, moment, TFile, TFolder, Modifier } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse, SettingDefinitionItem } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -117,6 +117,83 @@ function frontmatterMatchesValue(value: unknown, target: string): boolean {
 	return frontmatterValueToString(value) === target;
 }
 
+// 紐づけ先の設定値に書ける日付変数。デイリーノートやテンプレートのコアプラグインと同じ記法
+const TEMPLATE_PLACEHOLDER_REGEX = /\{\{(date|time)(?::([^}]*))?\}\}/g;
+const DEFAULT_DATE_FORMAT = 'YYYY-MM-DD';
+const DEFAULT_TIME_FORMAT = 'HH:mm';
+
+/** 設定値に日付変数が含まれているか（＝紐づけ先が投稿ごとに変わり得るか） */
+function hasTemplatePlaceholder(value: string): boolean {
+	return new RegExp(TEMPLATE_PLACEHOLDER_REGEX.source).test(value);
+}
+
+/**
+ * 紐づけ先の設定値に含まれる {{date}} / {{time}} を投稿日時で展開する。
+ * 書式は moment の記法で、既定は Obsidian コアのテンプレート設定に合わせている
+ * （{{date}} = YYYY-MM-DD、{{time}} = HH:mm）。moment は obsidian が re-export
+ * しているので追加依存は不要。
+ */
+function expandDateTemplate(template: string, date: Date): string {
+	const stamp = moment(date);
+	return template.replace(new RegExp(TEMPLATE_PLACEHOLDER_REGEX.source, 'g'), (_match, kind: string, format?: string) => {
+		const fallback = kind === 'time' ? DEFAULT_TIME_FORMAT : DEFAULT_DATE_FORMAT;
+		return stamp.format(format?.trim() || fallback);
+	});
+}
+
+/**
+ * 紐づけ先ノートへの wikilink を組み立てる。
+ * frontmatter 内で Obsidian がリンクとして解決するのは wikilink 形式だけなので、
+ * 利用者の「[[Wikilinks]]を使用」設定に従う generateMarkdownLink() は使わない。
+ * 同名ノートの取り違えを避けるため、拡張子を除いたフルパスで書く。
+ */
+function buildFrontmatterWikiLink(path: string): string {
+	return `[[${stripMarkdownExtension(path)}]]`;
+}
+
+/** wikilink には拡張子を書かないので取り除く */
+function stripMarkdownExtension(path: string): string {
+	return path.endsWith('.md') ? path.slice(0, -('.md'.length)) : path;
+}
+
+/**
+ * wikilink をYAMLとして安全な形にする。
+ * `[[...]]` は引用符で囲まないとフローシーケンス（ネストした配列）として解釈され、
+ * frontmatter 全体が壊れる。ノート名には引用符も入り得るのでエスケープも行う。
+ */
+function toYamlLink(link: string): string {
+	return `"${link.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * 設定に保存された紐づけ先パスからノートを引く。空欄は「紐づけなし」。
+ * 選択UIはフルパスを保存するが、手入力では拡張子が抜けたパス（"Bluesky MOC"）が
+ * 起きやすいので、そのままで見つからなければ .md を補って一度だけ再試行する。
+ */
+function findNoteByPath(app: App, rawPath: string): TFile | null {
+	const path = rawPath?.trim();
+	if (!path) return null;
+	const normalized = normalizePath(path);
+	return app.vault.getFileByPath(normalized) ?? app.vault.getFileByPath(`${normalized}.md`);
+}
+
+/**
+ * frontmatter の紐づけプロパティにリンクを追加する。
+ * 利用者が既に別の値を入れている可能性があるため**上書きはせず**、既存値を残したまま
+ * 配列に追加する（履歴ノートの tags を下書き側に適用しないのと同じ理由）。
+ * 同じリンクが既にあれば何もしないので、同じノートから再投稿しても重複しない。
+ */
+function addFrontmatterLink(frontmatter: Record<string, unknown>, key: string, link: string): void {
+	const current: unknown = frontmatter[key];
+	if (current === undefined || current === null || current === '') {
+		frontmatter[key] = link;
+		return;
+	}
+	const existing = Array.isArray(current) ? (current as unknown[]) : [current];
+	if (existing.some((v) => frontmatterValueToString(v) === link)) return;
+	frontmatter[key] = [...existing, link];
+}
+
 // 入力途中のURL（例: "https://"）は new URL() が例外を投げるため安全に解析する
 function parseUrlSafe(url: string): URL | null {
 	try {
@@ -204,6 +281,14 @@ type LocaleStrings = {
 	postHistoryFolderLabel: string;
 	postHistoryFolderDesc: string;
 	postHistorySaveFailed: string;
+	linkPropertyLabel: string;
+	linkPropertyDesc: string;
+	linkTargetPlaceholder: string;
+	draftLinkTargetLabel: string;
+	draftLinkTargetDesc: string;
+	historyLinkTargetLabel: string;
+	historyLinkTargetDesc: string;
+	linkTargetMissing: string;
 };
 
 // 追加: 設定用インターフェース & デフォルト値
@@ -216,6 +301,9 @@ interface BlueskyPluginSettings {
 	draftValue: string;
 	postHistoryEnabled: boolean;
 	postHistoryFolder: string;
+	linkProperty: string;
+	draftLinkTarget: string;
+	historyLinkTarget: string;
 }
 
 const DEFAULT_SETTINGS: BlueskyPluginSettings = {
@@ -226,7 +314,11 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	draftProperty: 'type',
 	draftValue: 'bluesky-draft',
 	postHistoryEnabled: false,
-	postHistoryFolder: 'Bluesky Posts'
+	postHistoryFolder: 'Bluesky Posts',
+	linkProperty: 'related',
+	// 空文字は「紐づけなし」。下書き・履歴で別々の紐づけ先を持てる
+	draftLinkTarget: '',
+	historyLinkTarget: ''
 };
 
 // 履歴ノート(B)の種別を示す frontmatter 値
@@ -378,7 +470,17 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			postHistoryDesc: '投稿成功時に本文・日時・URL入りのノートを自動作成します',
 			postHistoryFolderLabel: '履歴ノートの保存先',
 			postHistoryFolderDesc: '履歴ノートを作成するフォルダ（存在しなければ自動作成）',
-			postHistorySaveFailed: '投稿履歴の保存に失敗しました'
+			postHistorySaveFailed: '投稿履歴の保存に失敗しました',
+			linkPropertyLabel: '紐づけプロパティ名',
+			linkPropertyDesc: '紐づけ先へのリンクを書き込むfrontmatterのキー名',
+			linkTargetPlaceholder: '紐づけなし',
+			draftLinkTargetLabel: '下書きノートの紐づけ先',
+			draftLinkTargetDesc: '下書きから投稿したとき、そのノートに紐づけるノート（空欄なら紐づけません）。'
+				+ '{{date:YYYY-MM-DD}} や {{time:HHmm}} で投稿日時を埋め込めます',
+			historyLinkTargetLabel: '履歴ノートの紐づけ先',
+			historyLinkTargetDesc: '作成した履歴ノートに紐づけるノート（空欄なら紐づけません）。'
+				+ '{{date:YYYY-MM-DD}} や {{time:HHmm}} で投稿日時を埋め込めます',
+			linkTargetMissing: '紐づけ先のノートが見つからないため、リンクを追加しませんでした'
 		};
 	}
 	// Default to English
@@ -446,7 +548,17 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		postHistoryDesc: 'Automatically create a note with the text, timestamp and URL after a successful post',
 		postHistoryFolderLabel: 'History note folder',
 		postHistoryFolderDesc: 'Folder to create history notes in (created automatically if missing)',
-		postHistorySaveFailed: 'Failed to save post history'
+		postHistorySaveFailed: 'Failed to save post history',
+		linkPropertyLabel: 'Link property name',
+		linkPropertyDesc: 'Frontmatter key the link to the target note is written to',
+		linkTargetPlaceholder: 'No link',
+		draftLinkTargetLabel: 'Draft note link target',
+		draftLinkTargetDesc: 'Note to link a draft to when it is posted (leave empty to disable). '
+			+ 'Use {{date:YYYY-MM-DD}} or {{time:HHmm}} to embed the posting time',
+		historyLinkTargetLabel: 'History note link target',
+		historyLinkTargetDesc: 'Note to link newly created history notes to (leave empty to disable). '
+			+ 'Use {{date:YYYY-MM-DD}} or {{time:HHmm}} to embed the posting time',
+		linkTargetMissing: 'The link target note was not found, so no link was added'
 	};
 }
 				// (Removed stray malformed code block that caused syntax errors)
@@ -893,6 +1005,35 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			}
 		}
 
+		/** 紐づけリンクを書き込む frontmatter のキー名 */
+		private getLinkProperty(): string {
+			return this.settings.linkProperty?.trim() || DEFAULT_SETTINGS.linkProperty;
+		}
+
+		/**
+		 * 設定に保存された紐づけ先から、リンクに書くパスを決める。空欄なら紐づけなし。
+		 * 日付変数を展開したうえで、未作成のノートの扱いを設定の書き方で変える。
+		 *
+		 * - 変数入り（例: `01_data/{{date:YYYY-MM-DD}}`）: 紐づけ先が投稿ごとに変わり、
+		 *   その日のデイリーノートが投稿より後に作られることも普通にあるため、
+		 *   実在しなくても**未作成リンクとして書く**（後からノートを作れば自動で繋がる）
+		 * - 固定パス: 選択UIで選んだ実在ノートのはずなので、消えていればリネームか
+		 *   タイポの疑いがある。リンクは付けずに通知だけ出す
+		 *
+		 * どちらの場合も投稿の記録処理自体は続行する。
+		 */
+		private resolveLinkTargetPath(rawTemplate: string, now: Date): string | null {
+			const template = rawTemplate?.trim();
+			if (!template) return null;
+			const expanded = expandDateTemplate(template, now).trim();
+			if (!expanded) return null;
+			const file = findNoteByPath(this.app, expanded);
+			if (file) return file.path;
+			if (hasTemplatePlaceholder(template)) return normalizePath(expanded);
+			new Notice(this.getLocale().linkTargetMissing);
+			return null;
+		}
+
 		/** 履歴ノート・frontmatter 用のローカル日時文字列 (例: 2026-07-25T17:30:00) */
 		private formatLocalTimestamp(date: Date): string {
 			const pad = (n: number) => String(n).padStart(2, '0');
@@ -926,12 +1067,14 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			const tags = extractHashtags(text);
 			// タグは frontmatter の tags に持たせるので本文からは取り除く
 			const body = tags.length > 0 ? stripHashtags(text, tags) : text;
+			const linkTarget = this.resolveLinkTargetPath(this.settings.historyLinkTarget, now);
 			const frontmatter = [
 				'---',
 				`${this.settings.draftProperty || DEFAULT_SETTINGS.draftProperty}: ${POSTED_FRONTMATTER_VALUE}`,
 				`${POSTED_CHECKBOX_PROPERTY}: true`,
 				`posted_at: ${this.formatLocalTimestamp(now)}`,
 				...(postUrl ? [`url: ${postUrl}`] : []),
+				...(linkTarget ? [`${this.getLinkProperty()}: ${toYamlLink(buildFrontmatterWikiLink(linkTarget))}`] : []),
 				...(tags.length > 0 ? ['tags:', ...tags.map((tag) => `  - ${toYamlTag(tag)}`)] : []),
 				'---'
 			].join('\n');
@@ -946,7 +1089,14 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		private async markDraftAsPosted(file: TFile, postUrl: string | undefined): Promise<void> {
 			const key = this.settings.draftProperty || DEFAULT_SETTINGS.draftProperty;
 			const draftValue = this.settings.draftValue;
-			const postedAt = this.formatLocalTimestamp(new Date());
+			const now = new Date();
+			const postedAt = this.formatLocalTimestamp(now);
+			// 下書きノート自身が紐づけ先に解決された場合は自己リンクになるので付けない
+			const rawLinkTarget = this.resolveLinkTargetPath(this.settings.draftLinkTarget, now);
+			const linkTarget = rawLinkTarget !== null && stripMarkdownExtension(rawLinkTarget) === stripMarkdownExtension(file.path)
+				? null
+				: rawLinkTarget;
+			const linkProperty = this.getLinkProperty();
 			await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 				const current: unknown = frontmatter[key];
 				if (Array.isArray(current)) {
@@ -960,6 +1110,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				frontmatter[POSTED_CHECKBOX_PROPERTY] = true;
 				frontmatter.posted_at = postedAt;
 				if (postUrl) frontmatter.url = postUrl;
+				if (linkTarget) addFrontmatterLink(frontmatter, linkProperty, buildFrontmatterWikiLink(linkTarget));
 			});
 		}
 	}
@@ -1580,6 +1731,35 @@ class FolderSuggest extends AbstractInputSuggest<TFolder> {
 	}
 }
 
+/**
+ * vault 内 Markdown ノートのサジェスト付き入力。
+ * FolderSuggest と同じく、宣言的設定の control type:'file' が使えない
+ * display() フォールバック（1.13未満）専用。
+ */
+class FileSuggest extends AbstractInputSuggest<TFile> {
+	private onSelectFile: (path: string) => void;
+
+	constructor(app: App, inputEl: HTMLInputElement, onSelectFile: (path: string) => void) {
+		super(app, inputEl);
+		this.onSelectFile = onSelectFile;
+	}
+
+	protected getSuggestions(query: string): TFile[] {
+		const q = query.toLowerCase();
+		return this.app.vault.getMarkdownFiles().filter((file) => file.path.toLowerCase().includes(q));
+	}
+
+	renderSuggestion(file: TFile, el: HTMLElement): void {
+		el.setText(file.path);
+	}
+
+	selectSuggestion(file: TFile): void {
+		this.setValue(file.path);
+		this.onSelectFile(file.path);
+		this.close();
+	}
+}
+
 class BlueskySettingTab extends PluginSettingTab {
 	plugin: BlueskyPlugin;
 
@@ -1646,8 +1826,50 @@ class BlueskySettingTab extends PluginSettingTab {
 					includeRoot: true,
 					disabled: () => !this.plugin.settings.postHistoryEnabled
 				}
+			},
+			{
+				name: locale.linkPropertyLabel,
+				desc: locale.linkPropertyDesc,
+				control: { type: 'text', key: 'linkProperty', placeholder: DEFAULT_SETTINGS.linkProperty, defaultValue: DEFAULT_SETTINGS.linkProperty }
+			},
+			{
+				name: locale.draftLinkTargetLabel,
+				desc: locale.draftLinkTargetDesc,
+				control: {
+					type: 'file',
+					key: 'draftLinkTarget',
+					placeholder: locale.linkTargetPlaceholder,
+					filter: (file) => file.extension === 'md',
+					validate: (value) => this.validateLinkTarget(value)
+				}
+			},
+			{
+				name: locale.historyLinkTargetLabel,
+				desc: locale.historyLinkTargetDesc,
+				control: {
+					type: 'file',
+					key: 'historyLinkTarget',
+					placeholder: locale.linkTargetPlaceholder,
+					filter: (file) => file.extension === 'md',
+					validate: (value) => this.validateLinkTarget(value),
+					disabled: () => !this.plugin.settings.postHistoryEnabled
+				}
 			}
 		];
+	}
+
+	/**
+	 * 紐づけ先の入力値を検証する（1.13+ の宣言的コントロール専用）。
+	 * 空欄は「紐づけなし」なので有効。存在しないパスはこの場でインラインエラーにして、
+	 * 投稿時に初めて気づく事態を避ける。
+	 * 変数入りの設定は未作成リンクを許す仕様なので、実在しなくてもエラーにしない。
+	 */
+	private validateLinkTarget(value: string): string | void {
+		const template = value?.trim();
+		if (!template || hasTemplatePlaceholder(template)) return;
+		if (!findNoteByPath(this.app, template)) {
+			return this.plugin.getLocale().linkTargetMissing;
+		}
 	}
 
 	setControlValue(key: string, value: unknown): Promise<void> {
@@ -1656,7 +1878,8 @@ class BlueskySettingTab extends PluginSettingTab {
 			value = Number.isFinite(n) ? Math.min(Math.max(Math.round(n), 1000), 60000) : 15000;
 		}
 		(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
-		// 履歴トグルの状態は保存先フォルダ欄の disabled 判定に使われるため再評価させる
+		// 履歴トグルの状態は保存先フォルダ欄と履歴ノート紐づけ先欄の disabled 判定に
+		// 使われるため再評価させる
 		// refreshDomState() は 1.13.0 で追加されたAPI。この経路自体が宣言的レンダラ
 		// （1.13+）からしか呼ばれないが、minAppVersion が 1.8.7 なので明示的にガードする
 		if (requireApiVersion('1.13.0') && key === 'postHistoryEnabled') this.refreshDomState();
@@ -1742,14 +1965,15 @@ class BlueskySettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		// 保存先フォルダ欄はトグルに追従してグレーアウトさせる。display() を呼び直すと
+		// 履歴に依存する欄はトグルに追従してグレーアウトさせる。display() を呼び直すと
 		// 設定画面ごと作り直しになり入力中のフォーカスも飛ぶので、該当欄だけを更新する
-		let folderSetting: Setting | null = null;
-		let folderText: TextComponent | null = null;
-		const applyFolderDisabled = () => {
+		const historyDependents: { setting: Setting | null; text: TextComponent | null }[] = [];
+		const applyHistoryDisabled = () => {
 			const disabled = !this.plugin.settings.postHistoryEnabled;
-			folderSetting?.setDisabled(disabled);
-			folderText?.setDisabled(disabled);
+			for (const dependent of historyDependents) {
+				dependent.setting?.setDisabled(disabled);
+				dependent.text?.setDisabled(disabled);
+			}
 		};
 
 		new Setting(containerEl)
@@ -1760,14 +1984,16 @@ class BlueskySettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.postHistoryEnabled = value;
 					await this.plugin.saveSettings();
-					applyFolderDisabled();
+					applyHistoryDisabled();
 				}));
 
-		folderSetting = new Setting(containerEl)
+		const folderDependent: { setting: Setting | null; text: TextComponent | null } = { setting: null, text: null };
+		historyDependents.push(folderDependent);
+		folderDependent.setting = new Setting(containerEl)
 			.setName(locale.postHistoryFolderLabel)
 			.setDesc(locale.postHistoryFolderDesc)
 			.addText(text => {
-				folderText = text;
+				folderDependent.text = text;
 				text.setPlaceholder(DEFAULT_SETTINGS.postHistoryFolder)
 					.setValue(this.plugin.settings.postHistoryFolder)
 					.onChange(async (value) => {
@@ -1781,6 +2007,55 @@ class BlueskySettingTab extends PluginSettingTab {
 				});
 			});
 
-		applyFolderDisabled();
+		new Setting(containerEl)
+			.setName(locale.linkPropertyLabel)
+			.setDesc(locale.linkPropertyDesc)
+			.addText(text => text
+				.setPlaceholder(DEFAULT_SETTINGS.linkProperty)
+				.setValue(this.plugin.settings.linkProperty)
+				.onChange(async (value) => {
+					this.plugin.settings.linkProperty = value;
+					await this.plugin.saveSettings();
+				}));
+
+		this.addLinkTargetSetting(containerEl, locale.draftLinkTargetLabel, locale.draftLinkTargetDesc, 'draftLinkTarget');
+
+		const historyLinkDependent = this.addLinkTargetSetting(
+			containerEl, locale.historyLinkTargetLabel, locale.historyLinkTargetDesc, 'historyLinkTarget'
+		);
+		historyDependents.push(historyLinkDependent);
+
+		applyHistoryDisabled();
+	}
+
+	/**
+	 * 紐づけ先ノートの入力欄を1件描画する（display() フォールバック専用）。
+	 * グレーアウト制御のために Setting と TextComponent の参照を返す。
+	 */
+	private addLinkTargetSetting(
+		containerEl: HTMLElement,
+		name: string,
+		desc: string,
+		key: 'draftLinkTarget' | 'historyLinkTarget'
+	): { setting: Setting | null; text: TextComponent | null } {
+		const dependent: { setting: Setting | null; text: TextComponent | null } = { setting: null, text: null };
+		dependent.setting = new Setting(containerEl)
+			.setName(name)
+			.setDesc(desc)
+			.addText(text => {
+				dependent.text = text;
+				text.setPlaceholder(this.plugin.getLocale().linkTargetPlaceholder)
+					.setValue(this.plugin.settings[key])
+					.onChange(async (value) => {
+						this.plugin.settings[key] = value;
+						await this.plugin.saveSettings();
+					});
+				new FileSuggest(this.app, text.inputEl, (path) => {
+					text.setValue(path);
+					this.plugin.settings[key] = path;
+					void this.plugin.saveSettings();
+				});
+			});
+		return dependent;
 	}
 }
