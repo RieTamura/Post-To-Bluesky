@@ -23,6 +23,12 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 - Hashtags in the text are moved to the `tags` frontmatter property
 - The destination folder is picked through an input with folder suggestions
 
+### 🔗 Linking Notes Together
+
+- Automatically adds a link to a note of your choice into the frontmatter of draft and history notes
+- Draft notes and history notes can point at different targets, picked through an input with note suggestions
+- Date variables such as `{{date:YYYY-MM-DD}}` are supported, so posts can link to that day's daily note
+
 ### 📱 Mobile Support
 
 - Works in the Obsidian mobile app on iOS and Android
@@ -48,6 +54,7 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 - Custom hotkeys
 - Draft detection rule (frontmatter key and value)
 - Post history saving and its destination folder
+- Link target notes and the property name the link is written to
 
 ### ⌨️ Hotkeys
 
@@ -164,6 +171,57 @@ The posted text is kept here.
 - If saving the history fails, the post is still treated as successful and only a
   notice is shown
 
+### 2-3. Linking Notes to Another Note
+
+Set a link target in settings and a link to that note is added automatically to the
+frontmatter of draft and history notes. Posts then gather in the target note's backlinks,
+so you can browse a day's posts from a daily note or an MOC.
+
+```yaml
+---
+posted_at: 2026-07-27T17:50:42
+url: https://bsky.app/profile/xxx.bsky.social/post/3kabc...
+related: "[[01_data/2026/07/2026-07-27]]"   # added automatically
+---
+```
+
+- Draft notes and history notes have **separate targets**. Leave one empty to disable it
+- The property name is configurable (default: `related`)
+- The target note itself is never modified — the link is only written to the posting note
+- If the property already holds a value it is **not overwritten**; the new link is appended
+  alongside the existing values. A link that is already there is left alone, so re-posting
+  never creates duplicates
+
+#### Using Date Variables
+
+Link targets accept date variables, using the same syntax as the Daily notes and Templates
+core plugins.
+
+```
+01_data/{{date:YYYY/MM/YYYY-MM-DD}}   →   related: "[[01_data/2026/07/2026-07-27]]"
+```
+
+| Variable | Expands to |
+|----------|------------|
+| `{{date}}` | `2026-07-27` (default format `YYYY-MM-DD`) |
+| `{{date:YYYY/MM}}` | `2026/07` |
+| `{{time:HHmm}}` | `1750` (default format is `HH:mm`; prefer `HHmm` inside a path) |
+
+- A single setting can contain several variables
+- Variables expand against the **posting time** (the same instant as `posted_at`)
+- Escape syntax such as `{{date:gggg-[W]ww}}` works as well
+
+#### When the Target Note Does Not Exist
+
+Behaviour depends on how the target is written.
+
+- **With variables**: the link is written even if the note does not exist yet, as an
+  unresolved link. Creating that daily note later connects it automatically
+- **Fixed path**: no link is added and a notice is shown instead, so a renamed target or a
+  typo in the path does not go unnoticed
+
+Either way the post itself is still treated as successful.
+
 ### 3. Editing a Post
 
 - Edit text freely
@@ -219,6 +277,16 @@ The posted text is kept here.
 - **History note folder**: Folder to create history notes in (default: `Bluesky Posts`)
   - An input with vault folder suggestions. A folder name that does not exist yet is created when posting
   - Greyed out while "Save post history" is off
+
+### Note Linking
+
+- **Link property name**: Frontmatter key the link to the target note is written to (default: `related`)
+- **Draft note link target**: Note to link a draft to when it is posted (default: empty — no link)
+- **History note link target**: Note to link newly created history notes to (default: empty — no link)
+  - Greyed out while "Save post history" is off
+
+Both targets are inputs with vault note suggestions, and accept date variables such as
+`{{date:YYYY-MM-DD}}` (see [Usage 2-3](#2-3-linking-notes-to-another-note)).
 
 ### Hotkeys
 
@@ -311,6 +379,19 @@ Released under the 0BSD license.
 - No automatic retry on rate limit errors — you get a notice and resend after waiting
 
 ## Changelog
+
+### v0.3.0
+
+- Added note linking. A link to a note of your choice is added automatically to the
+  frontmatter of draft and history notes
+- Draft notes and history notes have separate targets, picked through an input with vault
+  note suggestions
+- Link targets accept `{{date:YYYY-MM-DD}}` / `{{time:HHmm}}` date variables, so posts can
+  link to that day's daily note
+- A target written with variables is linked even when the note does not exist yet (creating
+  it later connects the link). A fixed path that does not exist adds no link and shows a
+  notice instead
+- Added 3 settings (link property name, draft note link target, history note link target)
 
 ### v0.2.0
 

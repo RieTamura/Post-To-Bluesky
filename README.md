@@ -6,13 +6,14 @@
 
 ---
 
-**Version / バージョン**: 0.2.0
+**Version / バージョン**: 0.3.0
 
 **Features (EN)**:
 
 - Post to Bluesky from Obsidian
 - Post from draft notes in your vault
 - Automatic post history notes
+- Link posts to a note of your choice (date variables supported)
 - Desktop and mobile
 - Attach up to 4 images (desktop only)
 - Emoji picker
@@ -23,6 +24,7 @@
 - ObsidianからBlueskyへ投稿
 - vault内の下書きノートから投稿
 - 投稿履歴ノートの自動作成
+- 任意のノートへの紐づけ（日付変数に対応）
 - デスクトップ・モバイル両対応
 - 画像最大4枚添付（デスクトップのみ）
 - 絵文字ピッカー
