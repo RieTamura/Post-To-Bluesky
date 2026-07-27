@@ -325,6 +325,8 @@ Released under the 0BSD license.
 - Fixed: posts containing a link with a thumbnail failed to send
 - Fixed: re-login on expired auth, rate limit retry and detailed API error messages
   were never reached
+- Fixed: an incomplete URL typed into the body stopped the composer from picking up
+  any further input
 
 ### v0.1.6 (2026-07-25)
 
