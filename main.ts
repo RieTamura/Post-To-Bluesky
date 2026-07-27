@@ -232,7 +232,7 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 // 履歴ノート(B)の種別を示す frontmatter 値
 const POSTED_FRONTMATTER_VALUE = 'bluesky-posted';
 // 投稿済みを示す真偽値プロパティ。Obsidian の Properties UI ではチェックボックスとして表示される。
-// 下書きノートは draftProperty の値を保ったままこれが true になり、下書き一覧から外れる
+// 下書きノートは draftProperty から下書き値が取り除かれ、代わりにこれが true になって下書き一覧から外れる
 const POSTED_CHECKBOX_PROPERTY = 'bluesky_posted';
 const MAX_POST_LENGTH = 300;
 
