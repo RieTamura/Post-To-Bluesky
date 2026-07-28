@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, Platform, AbstractInputSuggest, normalizePath, requireApiVersion, moment, TFile, TFolder, Modifier } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, AbstractInputSuggest, FuzzySuggestModal, Menu, getLinkpath, normalizePath, requireApiVersion, moment, TFile, TFolder, Modifier } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse, SettingDefinitionItem } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -194,6 +194,172 @@ function addFrontmatterLink(frontmatter: Record<string, unknown>, key: string, l
 	frontmatter[key] = [...existing, link];
 }
 
+/** Bluesky に添付できる枚数の上限 */
+const MAX_IMAGES = 4;
+
+/**
+ * 添付候補として扱う画像の拡張子。
+ * createImageBitmap() でデコードできる形式に限っている（svg はデコードに失敗するため除く）。
+ */
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp']);
+
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	gif: 'image/gif',
+	webp: 'image/webp',
+	avif: 'image/avif',
+	bmp: 'image/bmp'
+};
+
+function isImageFile(file: TFile): boolean {
+	return IMAGE_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
+/** vault 内の画像を新しい順に返す。直前に保存した画像を添付することが多いため */
+function getVaultImages(app: App): TFile[] {
+	return app.vault.getFiles()
+		.filter(isImageFile)
+		.sort((a, b) => b.stat.mtime - a.stat.mtime);
+}
+
+/** vault 内の画像は File と違い type を持たないので拡張子から MIME を決める */
+function mimeTypeForExtension(extension: string): string {
+	return IMAGE_MIME_BY_EXTENSION[extension.toLowerCase()] || 'image/jpeg';
+}
+
+/**
+ * 投稿に添付する画像1枚分。
+ * 添付元が vault 内か端末かで読み出し・プレビュー・ノートへの記録が変わるため、
+ * 分岐をこの型に集約して呼び出し側では区別しなくて済むようにしている。
+ */
+interface SelectedImage {
+	/** プレビューの alt と重複判定に使う表示名 */
+	name: string;
+	/** vault 内の画像。端末から選んだ場合は vault へ取り込むまで null */
+	vaultFile: TFile | null;
+	/** 端末から選んだ元ファイル。vault 内の画像を選んだ場合は null */
+	deviceFile: File | null;
+	/**
+	 * 下書きノートに元から埋め込まれていた画像か。
+	 * 投稿後に下書きノートへ書き戻す対象から外すために持つ（既に本文にあるため）。
+	 */
+	fromDraft: boolean;
+}
+
+/** 同じ画像を二重に添付しないための識別子 */
+function selectedImageKey(image: SelectedImage): string {
+	if (image.vaultFile) return `vault:${image.vaultFile.path}`;
+	const file = image.deviceFile;
+	return `device:${file?.name}|${file?.size}|${file?.lastModified}`;
+}
+
+/**
+ * ノート本文に埋め込む画像の wikilink。
+ * 紐づけ先ノートと違い添付ファイルは拡張子込みのフルパスで書く（同名画像の取り違え防止）。
+ */
+function buildEmbedWikiLink(path: string): string {
+	return `![[${path}]]`;
+}
+
+/**
+ * 端末から選んだ画像を vault に取り込む。vault 内の画像はそのまま返す。
+ * 保存先は Obsidian 本体の添付ファイル設定に従わせたいので
+ * getAvailablePathForAttachment() に決めさせる（同名衝突の回避も行われる）。
+ * 取り込まない設定・取り込み失敗時は null を返し、投稿の記録処理自体は続行させる。
+ */
+async function importImageToVault(app: App, image: SelectedImage, sourcePath: string): Promise<TFile | null> {
+	if (image.vaultFile) return image.vaultFile;
+	if (!image.deviceFile) return null;
+	const buffer = await image.deviceFile.arrayBuffer();
+	const path = normalizePath(await app.fileManager.getAvailablePathForAttachment(image.name, sourcePath));
+	// 添付フォルダが未作成のことがある。createBinary は親フォルダを作らないので先に用意する
+	const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+	if (folder && !app.vault.getFolderByPath(folder)) {
+		await app.vault.createFolder(folder);
+	}
+	const created = await app.vault.createBinary(path, buffer);
+	image.vaultFile = created;
+	return created;
+}
+
+/**
+ * Bluesky の画像 blob 上限は 1,000,000 バイト。超えると uploadBlob が失敗するので
+ * 少し余裕を持たせた値を目標にする。
+ */
+const MAX_UPLOAD_BYTES = 950_000;
+/** 長辺の初期上限。Bluesky 側の表示解像度に対して十分大きい */
+const MAX_IMAGE_EDGE = 2048;
+
+type PreparedImage = { buffer: ArrayBuffer; mimeType: string; width: number; height: number };
+
+function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: number): Promise<Blob> {
+	return new Promise<Blob>((resolve, reject) => {
+		canvas.toBlob(
+			(blob) => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')),
+			mimeType,
+			quality
+		);
+	});
+}
+
+/**
+ * 添付画像を Bluesky に送れる形（長辺と容量の上限内）に変換する。
+ *
+ * vault 内の画像を直接添付できるようになったことで、端末から選ぶ場合より
+ * 大きな PNG がそのまま来るようになった。上限を超えたときは
+ * 「品質を下げる → JPEG に変換する → 縮小する」の順で段階的に落とす。
+ * JPEG は透過を表現できないため、変換する場合は白で下地を塗ってから描画する
+ * （何もしないと透過部分が黒く潰れる）。
+ */
+async function prepareImageForUpload(source: Blob, fallbackType: string): Promise<PreparedImage> {
+	const bitmap = await createImageBitmap(source);
+	try {
+		const sourceType = source.type || fallbackType || 'image/jpeg';
+		// canvas が確実に書き出せるのは png / jpeg / webp。それ以外は jpeg に寄せる
+		const encodable = ['image/png', 'image/jpeg', 'image/webp'].includes(sourceType);
+		let edge = MAX_IMAGE_EDGE;
+		let mimeType = encodable ? sourceType : 'image/jpeg';
+		let quality = mimeType === 'image/png' ? undefined : 0.92;
+		let last: PreparedImage | null = null;
+
+		// 「品質を下げる」→「JPEGへ変換」→「縮小」を最大8回まで試す
+		for (let attempt = 0; attempt < 8; attempt++) {
+			const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+			const canvas = createEl('canvas');
+			canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+			canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+			const ctx = canvas.getContext('2d');
+			if (!ctx) throw new Error('Failed to get canvas context');
+			if (mimeType === 'image/jpeg') {
+				ctx.fillStyle = '#ffffff';
+				ctx.fillRect(0, 0, canvas.width, canvas.height);
+			}
+			ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+
+			const blob = await canvasToBlob(canvas, mimeType, quality);
+			last = { buffer: await blob.arrayBuffer(), mimeType: blob.type || mimeType, width: canvas.width, height: canvas.height };
+			if (last.buffer.byteLength <= MAX_UPLOAD_BYTES) return last;
+
+			if (mimeType !== 'image/jpeg') {
+				// 可逆形式のままでは容量が落ちないので JPEG に切り替える
+				mimeType = 'image/jpeg';
+				quality = 0.85;
+			} else if ((quality ?? 0.92) > 0.5) {
+				quality = Math.max(0.5, (quality ?? 0.92) - 0.15);
+			} else {
+				edge = Math.max(640, Math.round(edge * 0.75));
+			}
+		}
+		// 上限まで試しても収まらなかった場合は最後の結果を返し、失敗は uploadBlob 側に委ねる
+		if (!last) throw new Error('Failed to encode image');
+		return last;
+	} finally {
+		bitmap.close();
+	}
+}
+
 // 入力途中のURL（例: "https://"）は new URL() が例外を投げるため安全に解析する
 function parseUrlSafe(url: string): URL | null {
 	try {
@@ -231,6 +397,12 @@ type LocaleStrings = {
 	imageUploadError: string;
 	maxImagesReached: string;
 	addImage: string;
+	imageLimitHint: string;
+	addImageFromVault: string;
+	addImageFromDevice: string;
+	imagePickerPlaceholder: string;
+	noImagesInVault: string;
+	imageSaveFailed: string;
 	addEmoji: string;
 	hotkeys: string;
 	placeholderText: string;
@@ -289,6 +461,8 @@ type LocaleStrings = {
 	historyLinkTargetLabel: string;
 	historyLinkTargetDesc: string;
 	linkTargetMissing: string;
+	saveImagesToVaultLabel: string;
+	saveImagesToVaultDesc: string;
 };
 
 // 追加: 設定用インターフェース & デフォルト値
@@ -304,6 +478,7 @@ interface BlueskyPluginSettings {
 	linkProperty: string;
 	draftLinkTarget: string;
 	historyLinkTarget: string;
+	saveImagesToVault: boolean;
 }
 
 const DEFAULT_SETTINGS: BlueskyPluginSettings = {
@@ -318,7 +493,9 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	linkProperty: 'related',
 	// 空文字は「紐づけなし」。下書き・履歴で別々の紐づけ先を持てる
 	draftLinkTarget: '',
-	historyLinkTarget: ''
+	historyLinkTarget: '',
+	// 端末から選んだ画像を vault に取り込むか。取り込まないとノートに埋め込めない
+	saveImagesToVault: true
 };
 
 // 履歴ノート(B)の種別を示す frontmatter 値
@@ -419,8 +596,14 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			postSuccess: '投稿が完了しました',
 			pleaseEnterContent: '投稿内容を入力してください。',
 			imageUploadError: '画像アップロードエラー',
-			maxImagesReached: '画像は最大4枚までです。',
+			maxImagesReached: `画像は最大${MAX_IMAGES}枚までです。`,
 			addImage: '画像追加',
+			imageLimitHint: `最大${MAX_IMAGES}枚`,
+			addImageFromVault: 'vault内の画像から選ぶ',
+			addImageFromDevice: '端末から選ぶ',
+			imagePickerPlaceholder: '添付する画像を検索',
+			noImagesInVault: 'vault内に画像が見つかりませんでした',
+			imageSaveFailed: '画像のvaultへの保存に失敗しました',
 			addEmoji: '絵文字追加',
 			hotkeys: 'ホットキー',
 			placeholderText: '投稿内容を入力...',
@@ -480,7 +663,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			historyLinkTargetLabel: '履歴ノートの紐づけ先',
 			historyLinkTargetDesc: '作成した履歴ノートに紐づけるノート（空欄なら紐づけません）。'
 				+ '{{date:YYYY-MM-DD}} や {{time:HHmm}} で投稿日時を埋め込めます',
-			linkTargetMissing: '紐づけ先のノートが見つからないため、リンクを追加しませんでした'
+			linkTargetMissing: '紐づけ先のノートが見つからないため、リンクを追加しませんでした',
+			saveImagesToVaultLabel: '端末から選んだ画像をvaultに保存',
+			saveImagesToVaultDesc: '端末から添付した画像をvaultに取り込み、下書きノート・履歴ノートに埋め込みます。'
+				+ '保存先はObsidian本体の「添付ファイルの保存先」設定に従います。'
+				+ 'オフにすると投稿はできますが、ノートには画像が残りません（vault内の画像を選んだ場合は設定に関わらず記録されます）'
 		};
 	}
 	// Default to English
@@ -497,8 +684,14 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		postSuccess: 'Post successful',
 		pleaseEnterContent: 'Please enter post content.',
 		imageUploadError: 'Image upload error',
-		maxImagesReached: 'Maximum 4 images allowed.',
+		maxImagesReached: `Maximum ${MAX_IMAGES} images allowed.`,
 		addImage: 'Add image',
+		imageLimitHint: `up to ${MAX_IMAGES}`,
+		addImageFromVault: 'Choose from vault',
+		addImageFromDevice: 'Choose from device',
+		imagePickerPlaceholder: 'Search images to attach',
+		noImagesInVault: 'No images found in the vault',
+		imageSaveFailed: 'Failed to save the image to the vault',
 		addEmoji: 'Add emoji',
 		hotkeys: 'Hotkeys',
 		placeholderText: 'Enter post content...',
@@ -558,7 +751,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		historyLinkTargetLabel: 'History note link target',
 		historyLinkTargetDesc: 'Note to link newly created history notes to (leave empty to disable). '
 			+ 'Use {{date:YYYY-MM-DD}} or {{time:HHmm}} to embed the posting time',
-		linkTargetMissing: 'The link target note was not found, so no link was added'
+		linkTargetMissing: 'The link target note was not found, so no link was added',
+		saveImagesToVaultLabel: 'Save device images to the vault',
+		saveImagesToVaultDesc: 'Import images attached from the device into the vault and embed them in draft and history notes. '
+			+ "The location follows Obsidian's own attachment folder setting. "
+			+ 'When off, posting still works but no image is kept in the note (images chosen from the vault are recorded regardless)'
 	};
 }
 				// (Removed stray malformed code block that caused syntax errors)
@@ -623,18 +820,16 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			callback: () => this.openDraftSelectModal()
 		});
 
-		// 画像添付はデスクトップのみ対応
-		if (!Platform.isMobile) {
-			this.addCommand({
-				id: 'add-image',
-				name: 'Add image',
-				callback: () => {
-					if (this.activeModal && !this.activeModal.isPosting) {
-						this.activeModal.fileInput?.click();
-					}
+		// 画像添付はモバイルでも使えるので、コマンドもプラットフォームを問わず登録する
+		this.addCommand({
+			id: 'add-image',
+			name: 'Add image',
+			callback: () => {
+				if (this.activeModal && !this.activeModal.isPosting) {
+					this.activeModal.openImageSourceMenu();
 				}
-			});
-		}
+			}
+		});
 
 		this.addCommand({
 			id: 'toggle-emoji-picker',
@@ -963,13 +1158,13 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		/**
 		 * エディタの選択文字列（なければ先頭500文字）を初期値として投稿モーダルを開く
 		 */
-		openPostModal(initialText = '', sourceFile: TFile | null = null) {
+		openPostModal(initialText = '', sourceFile: TFile | null = null, initialImages: TFile[] = []) {
 			if (this.activeModal) return;
 			// 予備ログイン（失敗しても無視）
 			if (!this.accessJwt) {
 				void this.login().catch(() => {});
 			}
-			const modal = new PostModal(this.app, this, initialText, sourceFile);
+			const modal = new PostModal(this.app, this, initialText, sourceFile, initialImages);
 			this.activeModal = modal;
 			modal.open();
 		}
@@ -991,14 +1186,14 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		 * それ以外は設定が有効なら履歴ノートを作成する（B）。
 		 * 失敗しても投稿自体は成功扱いのまま、通知だけ出す。
 		 */
-		async recordPostResult(text: string, postUrl: string | undefined, sourceFile: TFile | null): Promise<void> {
+		async recordPostResult(text: string, postUrl: string | undefined, sourceFile: TFile | null, images: SelectedImage[] = []): Promise<void> {
 			try {
 				if (sourceFile) {
-					await this.markDraftAsPosted(sourceFile, postUrl);
+					await this.markDraftAsPosted(sourceFile, postUrl, images);
 					return;
 				}
 				if (!this.settings.postHistoryEnabled) return;
-				await this.createPostHistoryNote(text, postUrl);
+				await this.createPostHistoryNote(text, postUrl, images);
 			} catch (error) {
 				console.error('[Post-To-Bluesky] Failed to record post:', error);
 				new Notice(this.getLocale().postHistorySaveFailed);
@@ -1048,8 +1243,35 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				+ ` ${pad(date.getHours())}${pad(date.getMinutes())}`;
 		}
 
+		/**
+		 * 添付した画像を、ノートに埋め込める wikilink の一覧にする。
+		 * 端末から選んだ画像は設定が有効なときだけ vault に取り込む。取り込みに失敗しても
+		 * 投稿自体は既に成功しているので、通知だけ出して残りの記録処理は続ける。
+		 *
+		 * @param sourcePath 添付ファイルの保存先を決める起点。Obsidian の「ノートと同じ
+		 *   フォルダ」設定を正しく効かせるため、画像を埋め込む側のノートのパスを渡す
+		 * @param skipDraftImages 下書きノートに元から埋め込まれていた画像を除くか
+		 *   （既に本文にあるため、書き戻すと重複する）
+		 */
+		private async collectImageEmbeds(images: SelectedImage[], sourcePath: string, skipDraftImages = false): Promise<string[]> {
+			const links: string[] = [];
+			for (const image of images) {
+				if (skipDraftImages && image.fromDraft) continue;
+				// vault 外の画像は取り込まない限りリンクが解決できないので飛ばす
+				if (!image.vaultFile && !this.settings.saveImagesToVault) continue;
+				try {
+					const file = await importImageToVault(this.app, image, sourcePath);
+					if (file) links.push(buildEmbedWikiLink(file.path));
+				} catch (error) {
+					console.error('[Post-To-Bluesky] Failed to save image to vault:', error);
+					new Notice(this.getLocale().imageSaveFailed);
+				}
+			}
+			return links;
+		}
+
 		/** 投稿履歴ノートを作成する（B） */
-		private async createPostHistoryNote(text: string, postUrl: string | undefined): Promise<void> {
+		private async createPostHistoryNote(text: string, postUrl: string | undefined, images: SelectedImage[] = []): Promise<void> {
 			const now = new Date();
 			const rawFolder = this.settings.postHistoryFolder?.trim() || DEFAULT_SETTINGS.postHistoryFolder;
 			const folderPath = rawFolder === '/' ? '' : normalizePath(rawFolder);
@@ -1078,7 +1300,15 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				...(tags.length > 0 ? ['tags:', ...tags.map((tag) => `  - ${toYamlTag(tag)}`)] : []),
 				'---'
 			].join('\n');
-			await this.app.vault.create(path, `${frontmatter}\n${body}\n`);
+			const noteFile = await this.app.vault.create(path, `${frontmatter}\n${body}\n`);
+			// 画像の取り込みはノートを作ってから行う。getAvailablePathForAttachment() は
+			// 起点ノートの場所から保存先を決めるので、存在しないパスを渡すと
+			// 「ノートと同じフォルダ」設定のときに保存先がずれる
+			const embeds = await this.collectImageEmbeds(images, noteFile.path);
+			if (embeds.length > 0) {
+				// 画像だけの投稿では本文が空なので、余分な空行を足さない
+				await this.app.vault.append(noteFile, `${body ? '\n' : ''}${embeds.join('\n')}\n`);
+			}
 		}
 
 		/**
@@ -1086,11 +1316,17 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		 * draftProperty から下書き値を取り除き、投稿済みかどうかはチェックボックス用の
 		 * 真偽値プロパティで表す。下書き値以外の要素（利用者独自のタグ等）は残す。
 		 */
-		private async markDraftAsPosted(file: TFile, postUrl: string | undefined): Promise<void> {
+		private async markDraftAsPosted(file: TFile, postUrl: string | undefined, images: SelectedImage[] = []): Promise<void> {
 			const key = this.settings.draftProperty || DEFAULT_SETTINGS.draftProperty;
 			const draftValue = this.settings.draftValue;
 			const now = new Date();
 			const postedAt = this.formatLocalTimestamp(now);
+			// 作成画面で足した画像だけを書き戻す。下書きは利用者の文章なので追記に留め、
+			// 既存の本文には手を入れない
+			const embeds = await this.collectImageEmbeds(images, file.path, true);
+			if (embeds.length > 0) {
+				await this.app.vault.append(file, `\n\n${embeds.join('\n')}\n`);
+			}
 			// 下書きノート自身が紐づけ先に解決された場合は自己リンクになるので付けない
 			const rawLinkTarget = this.resolveLinkTargetPath(this.settings.draftLinkTarget, now);
 			const linkTarget = rawLinkTarget !== null && stripMarkdownExtension(rawLinkTarget) === stripMarkdownExtension(file.path)
@@ -1125,9 +1361,10 @@ class PostModal extends Modal {
 	emojiPickerContainer: HTMLElement | null = null;
 	emojiButtonEl!: HTMLElement; // 絵文字ボタン参照
 	charCountEl!: HTMLElement;
-	fileInput: HTMLInputElement | null = null; // モバイルでは画像添付非対応のため null
+	fileInput: HTMLInputElement | null = null;
+	imageButtonEl!: HTMLElement; // 添付元メニューの表示位置に使う
 	sourceFile: TFile | null = null; // 下書きノート由来の投稿のみ設定される
-	selectedImages: File[] = [];
+	selectedImages: SelectedImage[] = [];
 	linkPreviewData: LinkPreviewData | null = null;
 	pendingLinkPreviewUrl: string | null = null;
 	debounceTimer: number | null = null;
@@ -1136,11 +1373,19 @@ class PostModal extends Modal {
 	outsideClickHandler?: (e: MouseEvent) => void;
 	private repositionEmojiPickerBound?: () => void;
 
-	constructor(app: App, plugin: BlueskyPlugin, initialText = '', sourceFile: TFile | null = null) {
+	constructor(app: App, plugin: BlueskyPlugin, initialText = '', sourceFile: TFile | null = null, initialImages: TFile[] = []) {
 		super(app);
 		this.plugin = plugin;
 		this.initialText = initialText;
 		this.sourceFile = sourceFile;
+		// 下書きノートに埋め込まれていた画像は最初から添付済みにしておく。
+		// fromDraft を立てておくことで、投稿後に同じ画像を下書きへ書き戻さずに済む
+		this.selectedImages = initialImages.slice(0, MAX_IMAGES).map((file) => ({
+			name: file.name,
+			vaultFile: file,
+			deviceFile: null,
+			fromDraft: true
+		}));
 	}
 
 	toggleEmojiPicker(): void {
@@ -1230,19 +1475,17 @@ class PostModal extends Modal {
 		const footerRowEl = footerEl.createDiv({ cls: 'bluesky-footer-row' });
 		const actionsEl = footerRowEl.createDiv({ cls: 'bluesky-actions' });
 
-		// 画像添付はデスクトップのみ。モバイルでは入力要素とボタンを作らない
-		if (!Platform.isMobile) {
-			const fileInput = contentEl.createEl('input', { cls: 'bluesky-hidden', attr: { type: 'file', accept: 'image/*' } });
-			fileInput.multiple = true;
-			fileInput.onchange = (e) => this.handleFileSelect(e);
-			this.fileInput = fileInput;
+		// 画像添付はデスクトップ・モバイル共通。添付元（vault内 / 端末）はメニューで選ばせる
+		const fileInput = contentEl.createEl('input', { cls: 'bluesky-hidden', attr: { type: 'file', accept: 'image/*' } });
+		fileInput.multiple = true;
+		fileInput.onchange = (e) => this.handleFileSelect(e);
+		this.fileInput = fileInput;
 
-			// 画像追加ボタン
-			new ButtonComponent(actionsEl)
-				.setIcon('image-file')
-				.setTooltip(`${this.plugin.getLocale().addImage} (最大4枚)`)
-				.onClick(() => fileInput.click());
-		}
+		const imageBtn = new ButtonComponent(actionsEl)
+			.setIcon('image-file')
+			.setTooltip(`${this.plugin.getLocale().addImage} (${this.plugin.getLocale().imageLimitHint})`)
+			.onClick((evt) => this.openImageSourceMenu(evt));
+		this.imageButtonEl = imageBtn.buttonEl;
 
 		// 絵文字ボタンのみ（ピッカー本体は body 直下に生成）
 		const emojiWrapper = actionsEl.createDiv({ cls: 'bluesky-emoji-wrapper' });
@@ -1262,6 +1505,8 @@ class PostModal extends Modal {
 			this.debounceUpdatePreviews();
 		});
 		this.updateCharCount();
+		// 下書きノートから引き継いだ画像を最初から表示する
+		if (this.selectedImages.length > 0) this.updateImagePreviews();
 		// 下書き本文など初期テキストにURLが含まれる場合もプレビューを取得する
 		if (this.textArea.value) this.debounceUpdatePreviews();
 		// 初期表示では絵文字ピッカーは閉じたまま
@@ -1282,7 +1527,7 @@ class PostModal extends Modal {
 		const actions: Record<string, () => void> = {
 			'submit-post': () => { if (!this.isPosting) void this.handlePost(); },
 			'cancel-post': () => this.close(),
-			'add-image': () => { if (!this.isPosting) this.fileInput?.click(); },
+			'add-image': () => { if (!this.isPosting) this.openImageSourceMenu(); },
 			'toggle-emoji-picker': () => this.toggleEmojiPicker(),
 		};
 
@@ -1355,52 +1600,108 @@ class PostModal extends Modal {
 		}
 	}
 
-	// キーボードイベントハンドラー
+	/**
+	 * 添付元（vault内 / 端末）を選ぶメニューを開く。
+	 * ボタン1つに集約しているのは、フッターのボタンが増えるとモバイルで押し間違えやすく
+	 * なるため。デスクトップでもコマンド・ホットキーからここを通す。
+	 */
+	openImageSourceMenu(evt?: MouseEvent): void {
+		// 絵文字ピッカーは z-index 9999 で Obsidian のメニューより手前に出るので、
+		// 開いたままだと添付元メニューが隠れてしまう
+		this.hideEmojiPicker();
+		const locale = this.plugin.getLocale();
+		const menu = new Menu();
+		menu.addItem((item) => item
+			.setTitle(locale.addImageFromVault)
+			.setIcon('image-file')
+			.onClick(() => this.openVaultImagePicker()));
+		menu.addItem((item) => item
+			.setTitle(locale.addImageFromDevice)
+			.setIcon('upload')
+			.onClick(() => this.fileInput?.click()));
+		if (evt) {
+			menu.showAtMouseEvent(evt);
+			return;
+		}
+		const rect = this.imageButtonEl.getBoundingClientRect();
+		menu.showAtPosition({ x: rect.left, y: rect.bottom }, activeDocument);
+	}
+
+	/** vault 内の画像から添付する。端末のピッカーと違い保存先が既に決まっている経路 */
+	private openVaultImagePicker(): void {
+		if (this.selectedImages.length >= MAX_IMAGES) {
+			new Notice(this.plugin.getLocale().maxImagesReached);
+			return;
+		}
+		const images = getVaultImages(this.app);
+		if (images.length === 0) {
+			new Notice(this.plugin.getLocale().noImagesInVault);
+			return;
+		}
+		new VaultImageSuggestModal(this.app, this.plugin, images, (file) => {
+			this.addImages([{ name: file.name, vaultFile: file, deviceFile: null, fromDraft: false }]);
+		}).open();
+	}
+
 	handleFileSelect(event: Event) {
-		const files = (event.target as HTMLInputElement).files;
-		if (!files) return;
-		const remainingSlots = Math.max(0, 4 - this.selectedImages.length);
-		if (remainingSlots === 0) { new Notice(this.plugin.getLocale().maxImagesReached); (event.target as HTMLInputElement).value = ''; return; }
-		if (files.length > 0) {
-			this.linkPreviewData = null;
-			this.linkPreviewContainer.empty();
-			this.pendingLinkPreviewUrl = null;
-		}
-		const existing = new Set(this.selectedImages.map(f => `${f.name}|${f.size}|${f.lastModified}`));
-		const uniques: File[] = [];
-		for (const file of Array.from(files)) {
-			const key = `${file.name}|${file.size}|${file.lastModified}`;
-			if (existing.has(key)) continue;
-			uniques.push(file);
-			if (uniques.length >= remainingSlots) break;
-		}
-		this.selectedImages.push(...uniques);
-		this.updateImagePreviews();
+		const input = event.target as HTMLInputElement;
+		if (!input.files) return;
+		this.addImages(Array.from(input.files).map((file) => ({
+			name: file.name,
+			vaultFile: null,
+			deviceFile: file,
+			fromDraft: false
+		})));
 		// 同一ファイル再選択のためにクリア
-		if (this.fileInput) this.fileInput.value = '';
+		input.value = '';
+	}
+
+	/**
+	 * 添付候補を上限と重複を見ながら取り込む。
+	 * vault内・端末・下書き由来のどの経路もここを通すので、上限判定が一箇所で済む。
+	 */
+	private addImages(candidates: SelectedImage[]): void {
+		const remainingSlots = MAX_IMAGES - this.selectedImages.length;
+		if (remainingSlots <= 0) {
+			new Notice(this.plugin.getLocale().maxImagesReached);
+			return;
+		}
+		const existing = new Set(this.selectedImages.map(selectedImageKey));
+		const added: SelectedImage[] = [];
+		for (const candidate of candidates) {
+			const key = selectedImageKey(candidate);
+			if (existing.has(key)) continue;
+			existing.add(key);
+			added.push(candidate);
+			if (added.length >= remainingSlots) break;
+		}
+		if (added.length === 0) return;
+		// 画像とリンクカードは Bluesky の embed として排他なので、画像を優先する
+		this.linkPreviewData = null;
+		this.linkPreviewContainer.empty();
+		this.pendingLinkPreviewUrl = null;
+		this.selectedImages.push(...added);
+		this.updateImagePreviews();
+		if (added.length < candidates.length && this.selectedImages.length >= MAX_IMAGES) {
+			new Notice(this.plugin.getLocale().maxImagesReached);
+		}
 	}
 
 	updateImagePreviews() {
-		// Revoke existing object URLs before clearing to avoid memory leaks
-		this.imagePreviewContainer.querySelectorAll('img').forEach((el) => {
-			if (el.src && el.src.startsWith('blob:')) {
-				URL.revokeObjectURL(el.src);
-			}
-		});
+		this.releasePreviewObjectUrls();
 		this.imagePreviewContainer.empty();
-		this.selectedImages.forEach((file) => {
+		this.selectedImages.forEach((image) => {
 			const previewEl = this.imagePreviewContainer.createDiv({ cls: 'bluesky-image-preview' });
-			const img = previewEl.createEl('img', { attr: { alt: file.name || 'image' } });
-			const objectUrl = URL.createObjectURL(file);
-			img.src = objectUrl;
+			const img = previewEl.createEl('img', { attr: { alt: image.name || 'image' } });
+			// vault 内の画像は resource path をそのまま使えるので blob URL の解放が要らない
+			img.src = image.vaultFile
+				? this.app.vault.getResourcePath(image.vaultFile)
+				: URL.createObjectURL(image.deviceFile as File);
 			const removeBtn = previewEl.createDiv({ cls: 'bluesky-remove-image-btn' });
 			setIcon(removeBtn, 'x');
 			removeBtn.onclick = () => {
-				const currentIndex = this.selectedImages.indexOf(file);
+				const currentIndex = this.selectedImages.indexOf(image);
 				if (currentIndex !== -1) this.selectedImages.splice(currentIndex, 1);
-				if (img.src && img.src.startsWith('blob:')) {
-					URL.revokeObjectURL(img.src);
-				}
 				this.updateImagePreviews();
 				if (this.selectedImages.length === 0) {
 					// 画像が空ならリンクプレビューを再評価
@@ -1408,6 +1709,25 @@ class PostModal extends Modal {
 				}
 			};
 		});
+	}
+
+	/** 端末から選んだ画像のプレビューURLを解放する（vault画像の resource path は対象外） */
+	private releasePreviewObjectUrls(): void {
+		try {
+			this.imagePreviewContainer?.querySelectorAll('img').forEach((el) => {
+				if (el.src?.startsWith('blob:')) URL.revokeObjectURL(el.src);
+			});
+		} catch (error) {
+			console.debug('[Post-To-Bluesky] Failed to release preview blobs', error);
+		}
+	}
+
+	/** 添付元の違いを吸収して画像のバイト列を得る */
+	private async readImageBlob(image: SelectedImage): Promise<Blob> {
+		if (image.deviceFile) return image.deviceFile;
+		if (!image.vaultFile) throw new Error('Image source is missing');
+		const buffer = await this.app.vault.readBinary(image.vaultFile);
+		return new Blob([buffer], { type: mimeTypeForExtension(image.vaultFile.extension) });
 	}
 
 	updateCharCount() {
@@ -1501,35 +1821,18 @@ class PostModal extends Modal {
 
 		if (this.selectedImages.length > 0) {
 			try {
-				const uploadedImages: Image[] = await Promise.all(this.selectedImages.map(async (file) => {
-					const imageBitmap = await createImageBitmap(file);
-					const { width, height } = imageBitmap;
-					const canvas = createEl('canvas');
-					const MAX_EDGE = 2048;
-					const scale = Math.min(1, MAX_EDGE / Math.max(width, height));
-					canvas.width = Math.max(1, Math.round(width * scale));
-					canvas.height = Math.max(1, Math.round(height * scale));
-					const ctx = canvas.getContext('2d');
-					if (!ctx) throw new Error('Failed to get canvas context');
-					ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
-					imageBitmap.close();
-					const processedBlob = await new Promise<Blob>((resolve, reject) => {
-						const fallbackType = file.type || 'image/jpeg';
-						const quality: number | undefined = fallbackType === 'image/jpeg' ? 0.92 : undefined;
-						canvas.toBlob(
-							(blob) => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed')),
-							fallbackType,
-							quality
-						);
-					});
-					const buffer = await processedBlob.arrayBuffer();
-					const uploaded = await this.plugin.uploadBlob(buffer, processedBlob.type);
-					return {
+				// 1枚ずつ処理する。4枚を同時にデコードするとモバイルでメモリを圧迫するため
+				const uploadedImages: Image[] = [];
+				for (const image of this.selectedImages) {
+					const source = await this.readImageBlob(image);
+					const prepared = await prepareImageForUpload(source, 'image/jpeg');
+					const uploaded = await this.plugin.uploadBlob(prepared.buffer, prepared.mimeType);
+					uploadedImages.push({
 						image: uploaded.blob,
 						alt: '',
-						aspectRatio: { width: canvas.width, height: canvas.height }
-					};
-				}));
+						aspectRatio: { width: prepared.width, height: prepared.height }
+					});
+				}
 				embed = { $type: 'app.bsky.embed.images', images: uploadedImages };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -1565,7 +1868,7 @@ class PostModal extends Modal {
 
 			const result = await this.plugin.postToBluesky(text, embed);
 			if (result.success) {
-				await this.plugin.recordPostResult(text, result.postUrl, this.sourceFile);
+				await this.plugin.recordPostResult(text, result.postUrl, this.sourceFile, this.selectedImages);
 				this.close();
 			} else if (this.plugin.activeModal === this) {
 				this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
@@ -1579,18 +1882,42 @@ class PostModal extends Modal {
 		if (this.plugin.activeModal === this) this.plugin.activeModal = null;
 		if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
-		// 画像プレビューの blob URL を解放
-		try {
-			this.imagePreviewContainer?.querySelectorAll('img').forEach((el) => {
-				const src = el.src;
-				if (src?.startsWith('blob:')) URL.revokeObjectURL(src);
-			});
-		} catch (error) {
-			console.debug('[Post-To-Bluesky] Failed to release preview blobs', error);
-		}
+		this.releasePreviewObjectUrls();
 		this.contentEl.empty();
 	}
 }
+
+/**
+ * vault 内の画像を選ばせるサジェスト。
+ * 端末のファイルピッカーと違い PC・モバイルで挙動が変わらず、選んだ時点でパスが
+ * 確定しているのでそのままノートに埋め込める。
+ */
+class VaultImageSuggestModal extends FuzzySuggestModal<TFile> {
+	private images: TFile[];
+	private onChooseImage: (file: TFile) => void;
+
+	constructor(app: App, plugin: BlueskyPlugin, images: TFile[], onChooseImage: (file: TFile) => void) {
+		super(app);
+		this.images = images;
+		this.onChooseImage = onChooseImage;
+		this.setPlaceholder(plugin.getLocale().imagePickerPlaceholder);
+	}
+
+	getItems(): TFile[] {
+		return this.images;
+	}
+
+	getItemText(file: TFile): string {
+		return file.path;
+	}
+
+	onChooseItem(file: TFile): void {
+		this.onChooseImage(file);
+	}
+}
+
+/** 下書きノートを投稿本文と添付画像に分けた結果 */
+type DraftContent = { body: string; images: TFile[] };
 
 /**
  * frontmatter で下書きと判定されたノートの一覧を表示し、選択したノートの本文で
@@ -1622,6 +1949,36 @@ class DraftSelectModal extends Modal {
 			.sort((a, b) => b.stat.mtime - a.stat.mtime);
 	}
 
+	/**
+	 * 下書きノートの内容を、投稿本文と添付画像に分ける。
+	 *
+	 * 画像の埋め込みを本文に残すと `![[写真.png]]` という文字列がそのまま Bluesky に
+	 * 投稿され、画像は付かないのに文字数だけ消費する。そのため埋め込みは本文から取り除き、
+	 * 添付画像として扱う。埋め込み記法の揺れ（wikilink / markdown / 表示指定つき）を
+	 * 自前の正規表現で追わずに済むよう、metadataCache が解決した位置情報を使う。
+	 *
+	 * 上限を超える分の埋め込みも本文からは取り除く。どのみち投稿できないので、
+	 * 文字列として本文に残るより取り除いたほうが害が小さい。
+	 */
+	private extractDraftContent(file: TFile, content: string): DraftContent {
+		const embeds = this.app.metadataCache.getFileCache(file)?.embeds ?? [];
+		const images: TFile[] = [];
+		// 後ろから消さないと、先に消した分だけ後続の埋め込みのオフセットがずれる
+		const ordered = [...embeds].sort((a, b) => b.position.start.offset - a.position.start.offset);
+		let stripped = content;
+		for (const embed of ordered) {
+			const target = this.app.metadataCache.getFirstLinkpathDest(getLinkpath(embed.link), file.path);
+			if (!target || !isImageFile(target)) continue;
+			// 降順に走査しているので、先頭に積むと本文中の並び順に戻る
+			images.unshift(target);
+			stripped = stripped.slice(0, embed.position.start.offset) + stripped.slice(embed.position.end.offset);
+		}
+		// 埋め込みは frontmatter より後ろにしか現れないので、除去後も frontmatter の
+		// 位置（stripFrontmatter が参照するキャッシュ）はずれない
+		const body = this.stripFrontmatter(stripped, file).replace(/\n{3,}/g, '\n\n').trim();
+		return { body, images: images.slice(0, MAX_IMAGES) };
+	}
+
 	/** 投稿本文として使うため frontmatter ブロックを除去する */
 	stripFrontmatter(content: string, file: TFile): string {
 		const end = this.app.metadataCache.getFileCache(file)?.frontmatterPosition?.end.offset;
@@ -1631,15 +1988,21 @@ class DraftSelectModal extends Modal {
 		return content.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/, '').trim();
 	}
 
-	renderDraftItem(listEl: HTMLElement, file: TFile, body: string): void {
-		const count = countGraphemes(body);
+	renderDraftItem(listEl: HTMLElement, file: TFile, draft: DraftContent): void {
+		const count = countGraphemes(draft.body);
 		const itemEl = listEl.createDiv({ cls: 'bluesky-draft-item', attr: { role: 'button', tabindex: '0' } });
 		setIcon(itemEl.createSpan({ cls: 'bluesky-draft-icon' }), 'file-text');
 		itemEl.createSpan({ cls: 'bluesky-draft-name', text: file.basename });
+		// 添付される画像の枚数を出しておかないと、本文から埋め込みが消えて見えるのが不可解になる
+		if (draft.images.length > 0) {
+			const imageEl = itemEl.createSpan({ cls: 'bluesky-draft-images' });
+			setIcon(imageEl.createSpan({ cls: 'bluesky-draft-images-icon' }), 'image-file');
+			imageEl.createSpan({ text: String(draft.images.length) });
+		}
 		const countEl = itemEl.createSpan({ cls: 'bluesky-draft-count', text: `${count}/${MAX_POST_LENGTH}` });
 		countEl.toggleClass('bluesky-over-limit', count > MAX_POST_LENGTH);
 
-		const select = () => this.selectDraft(file, body, count);
+		const select = () => this.selectDraft(file, draft, count);
 		itemEl.addEventListener('click', select);
 		itemEl.addEventListener('keydown', (e: KeyboardEvent) => {
 			if (e.key === 'Enter' || e.key === ' ') {
@@ -1649,12 +2012,12 @@ class DraftSelectModal extends Modal {
 		});
 	}
 
-	private selectDraft(file: TFile, body: string, count: number): void {
+	private selectDraft(file: TFile, draft: DraftContent, count: number): void {
 		if (count > MAX_POST_LENGTH) {
 			new Notice(`${this.plugin.getLocale().draftTooLong} (${count}/${MAX_POST_LENGTH})`);
 		}
 		this.close();
-		this.plugin.openPostModal(body, file);
+		this.plugin.openPostModal(draft.body, file, draft.images);
 	}
 
 	private async renderDrafts(): Promise<void> {
@@ -1672,7 +2035,7 @@ class DraftSelectModal extends Modal {
 				const content = await this.app.vault.cachedRead(file);
 				// 読み込み中に閉じられた場合は描画を中断
 				if (!this.isRendering) return;
-				this.renderDraftItem(listEl, file, this.stripFrontmatter(content, file));
+				this.renderDraftItem(listEl, file, this.extractDraftContent(file, content));
 			}
 		} catch (error) {
 			console.error('[Post-To-Bluesky] Failed to load draft notes:', error);
@@ -1854,6 +2217,11 @@ class BlueskySettingTab extends PluginSettingTab {
 					validate: (value) => this.validateLinkTarget(value),
 					disabled: () => !this.plugin.settings.postHistoryEnabled
 				}
+			},
+			{
+				name: locale.saveImagesToVaultLabel,
+				desc: locale.saveImagesToVaultDesc,
+				control: { type: 'toggle', key: 'saveImagesToVault', defaultValue: DEFAULT_SETTINGS.saveImagesToVault }
 			}
 		];
 	}
@@ -2024,6 +2392,16 @@ class BlueskySettingTab extends PluginSettingTab {
 			containerEl, locale.historyLinkTargetLabel, locale.historyLinkTargetDesc, 'historyLinkTarget'
 		);
 		historyDependents.push(historyLinkDependent);
+
+		new Setting(containerEl)
+			.setName(locale.saveImagesToVaultLabel)
+			.setDesc(locale.saveImagesToVaultDesc)
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.saveImagesToVault)
+				.onChange(async (value) => {
+					this.plugin.settings.saveImagesToVault = value;
+					await this.plugin.saveSettings();
+				}));
 
 		applyHistoryDisabled();
 	}

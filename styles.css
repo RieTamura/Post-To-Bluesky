@@ -338,6 +338,26 @@ input.bluesky-hidden {
   white-space: nowrap;
 }
 
+.bluesky-draft-images {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bluesky-draft-images-icon {
+  display: flex;
+  align-items: center;
+}
+
+.bluesky-draft-images-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
 .bluesky-draft-count {
   font-size: 12px;
   color: var(--text-muted);
