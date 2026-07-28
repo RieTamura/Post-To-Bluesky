@@ -32,13 +32,15 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 ### 📱 Mobile Support
 
 - Works in the Obsidian mobile app on iOS and Android
-- Only the image attachment UI is hidden on mobile; every text posting feature works
+- Every feature is available on mobile, image attachment included
 
 ### 🖼️ Image Attachment
 
-- Attach up to 4 images (desktop only)
-- Drag & drop supported
-- Automatic aspect ratio handling
+- Attach up to 4 images (desktop and mobile alike)
+- Two sources: pick **from the vault**, or **from the device** file/photo picker
+- Attached images are recorded in draft and history notes as `![[...]]`
+- Images embedded in a draft note are attached automatically when you post from it
+- Automatic aspect ratio handling, plus automatic compression to fit Bluesky's size limit
 
 ### 😊 Emoji Picker
 
@@ -55,6 +57,7 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 - Draft detection rule (frontmatter key and value)
 - Post history saving and its destination folder
 - Link target notes and the property name the link is written to
+- Whether images picked from the device are saved into the vault
 
 ### ⌨️ Hotkeys
 
@@ -110,6 +113,22 @@ npm run dev
 - Use the Command Palette: "Open post composer"
 - Click the ribbon icon (send icon)
 
+### 2-0. Attaching Images
+
+The image button in the post modal (or the "Add image" command) opens a menu that asks
+where the image comes from.
+
+- **Choose from vault**: search the vault's images, newest first. They already live in the
+  vault, so they are recorded in the note as-is
+- **Choose from device**: use the OS file/photo picker. When "Save device images to the
+  vault" is on, the image is imported into the vault after posting and embedded in the note
+
+Up to 4 images per post. Attaching an image hides the link card preview — Bluesky cannot
+carry images and a link card in the same post.
+
+After a successful post the attached images are appended to the draft or history note as
+`![[path/to/image]]`.
+
 ### 2-1. Posting from a Draft Note
 
 1. Add the draft property to any note's frontmatter:
@@ -129,6 +148,10 @@ npm run dev
 3. Pick a note from the draft list. Its body (frontmatter stripped) is loaded into
    the post modal. If it exceeds 300 characters you get a warning — edit it in the
    modal before posting.
+
+   Images embedded in the note (`![[photo.png]]`) are **carried over as attachments and
+   removed from the body text**. Posting the embed syntax verbatim would spend characters
+   without attaching anything. The draft list shows how many images will be carried over.
 4. After a successful post, the draft note's frontmatter is updated:
 
    ```yaml
@@ -146,6 +169,9 @@ npm run dev
 
    Note that posting from a draft does **not** create a separate history note — the
    draft note itself becomes the record, so a single post never produces two notes.
+
+   Images you **add in the post modal** are appended to the draft note as `![[...]]`.
+   Images that were already embedded in the note are not appended again.
 
 ### 2-2. Automatic Post History Notes
 
@@ -240,7 +266,6 @@ Either way the post itself is still treated as successful.
 
 - **Obsidian**: 1.8.7+
 - **Platforms**: Desktop (Windows, macOS, Linux) and mobile (iOS, Android)
-  - Image attachment is unavailable on mobile
 - **Language**: TypeScript
 
 ### Key Technologies
@@ -288,6 +313,16 @@ Either way the post itself is still treated as successful.
 Both targets are inputs with vault note suggestions, and accept date variables such as
 `{{date:YYYY-MM-DD}}` (see [Usage 2-3](#2-3-linking-notes-to-another-note)).
 
+### Images
+
+- **Save device images to the vault**: Import images attached from the device into the
+  vault and embed them in draft and history notes (default: on)
+  - The location follows Obsidian's own **"Default location for new attachments"**
+    setting. The plugin does not add a folder setting of its own
+  - When off, posting still works but no image is kept in the note
+  - **Images chosen from the vault are recorded regardless of this setting** — they are
+    already in the vault, so nothing new is written
+
 ### Hotkeys
 
 - **Cancel**: Cancel post (default: None)
@@ -329,7 +364,10 @@ Both targets are inputs with vault note suggestions, and accept date variables s
    - `bluesky_posted` is not checked. Posted notes are excluded from the list. To treat
      one as a draft again, uncheck `bluesky_posted` and add `bluesky-draft` back to `type`
 
-5. **Cannot attach images on mobile**: This is by design — the image UI is hidden on mobile
+5. **An image does not appear in the note**: Check "Save device images to the vault" in
+   settings. When it is off, images picked from the device are posted but not kept in the
+   vault, so there is nothing for the note to embed. Images picked from the vault are
+   always recorded
 
 ### Logs
 
@@ -374,11 +412,30 @@ Released under the 0BSD license.
 ## Known Limitations
 
 - Up to 4 images per post (Bluesky limit)
-- Image attachment is unavailable on mobile
+- Video attachment is not supported
+- Animated GIFs are posted as a still first frame (they are re-encoded before upload)
+- SVG cannot be attached — it is not decodable as an image, so it never appears in the picker
+- Images cannot be added by drag & drop or paste; use the button or the command
 - 300 characters per post (an error is shown before sending if exceeded)
 - No automatic retry on rate limit errors — you get a notice and resend after waiting
 
 ## Changelog
+
+### v0.4.0
+
+- **Image attachment now works on mobile** (it was desktop-only before)
+- **Attached images are now recorded in draft and history notes.** Previously they were
+  posted to Bluesky but nothing was left in the note
+- Added **choosing images from the vault** as an attachment source. The image button now
+  opens a menu with "Choose from vault" and "Choose from device"
+- **Images embedded in a draft note (`![[photo.png]]`) are now attached to the post.**
+  Previously the embed syntax was posted verbatim as text, spending characters without
+  attaching the image (bug fix)
+- Added a setting to import device images into the vault (default: on). The location
+  follows Obsidian's own attachment folder setting
+- The draft list now shows how many images a draft will carry over
+- Images over Bluesky's blob size limit (~1 MB) are compressed automatically, so a large
+  PNG from the vault no longer fails to upload
 
 ### v0.3.0
 

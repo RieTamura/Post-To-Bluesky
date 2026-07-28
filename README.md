@@ -6,7 +6,7 @@
 
 ---
 
-**Version / バージョン**: 0.3.0
+**Version / バージョン**: 0.4.0
 
 **Features (EN)**:
 
@@ -15,7 +15,8 @@
 - Automatic post history notes
 - Link posts to a note of your choice (date variables supported)
 - Desktop and mobile
-- Attach up to 4 images (desktop only)
+- Attach up to 4 images, from the vault or from your device
+- Attached images are recorded in draft and history notes
 - Emoji picker
 - Default hashtags
 
@@ -26,7 +27,8 @@
 - 投稿履歴ノートの自動作成
 - 任意のノートへの紐づけ（日付変数に対応）
 - デスクトップ・モバイル両対応
-- 画像最大4枚添付（デスクトップのみ）
+- 画像最大4枚添付（vault内の画像・端末の画像のどちらからでも）
+- 添付した画像を下書きノート・履歴ノートに記録
 - 絵文字ピッカー
 - デフォルトハッシュタグ設定
 
@@ -65,7 +67,7 @@ Post to Bluesky from notes, with post history, images & emoji.
 
 1. Open **Settings → Post To Bluesky** and enter your Bluesky handle and an [app password](https://bsky.app/settings/app-passwords).
 2. Open the command palette and run **Open post composer**.
-3. Write your post, optionally attach up to 4 images or emoji, and select **Post**.
+3. Write your post, optionally attach up to 4 images (from the vault or your device) or emoji, and select **Post**.
 
 To post from a note, add `type: bluesky-draft` to its frontmatter and run **Post from draft notes**.
 
