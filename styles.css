@@ -408,3 +408,30 @@ input.bluesky-hidden {
 .hotkey-conflict-warning br {
 	margin-bottom: 5px;
 }
+
+/* 下書き保存の確認モーダル */
+.bluesky-confirm-modal p {
+  margin: 0 0 8px;
+}
+
+.bluesky-confirm-modal .bluesky-confirm-note {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.bluesky-confirm-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* モバイルでは押し間違えないよう縦に積んで幅を揃える */
+.is-mobile .bluesky-confirm-buttons {
+  flex-direction: column-reverse;
+}
+
+.is-mobile .bluesky-confirm-buttons button {
+  width: 100%;
+}

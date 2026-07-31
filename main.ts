@@ -34,10 +34,15 @@ function trimTrailingPunctuation(url: string): string {
 	return url.replace(TRAILING_PUNCT_REGEX, '');
 }
 
-function extractFirstUrl(text: string): string | null {
+/**
+ * 本文に最初に現れる URL を位置つきで返す。
+ * 位置を返すのは、Markdown のリンク記法から取れた URL とどちらが先かを比べて
+ * リンクカードの対象を決めるため。
+ */
+function findFirstUrl(text: string): { url: string; index: number } | null {
 	const regex = new RegExp(URL_DETECTION_REGEX.source);
 	const match = regex.exec(text);
-	return match ? trimTrailingPunctuation(match[0]) : null;
+	return match ? { url: trimTrailingPunctuation(match[0]), index: match.index } : null;
 }
 
 /**
@@ -94,6 +99,12 @@ function stripHashtags(text: string, tags: string[]): string {
 function toYamlTag(tag: string): string {
 	return /^[A-Za-z_\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(tag) ? tag : `"${tag}"`;
 }
+
+/**
+ * ノート先頭の frontmatter ブロック。metadataCache が使えない・当てにできない場面で
+ * 本文と frontmatter を切り分けるために使う。
+ */
+const FRONTMATTER_BLOCK_REGEX = /^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/;
 
 /**
  * frontmatter の値を下書き判定用に文字列化する。
@@ -248,6 +259,12 @@ interface SelectedImage {
 	fromDraft: boolean;
 }
 
+/**
+ * 投稿せずに作成画面を閉じたときに下書きノートへ残す内容。
+ * 端末から選んだ画像は vault に無く TFile では表せないため SelectedImage のまま持つ。
+ */
+type PendingDraft = { text: string; images: SelectedImage[]; sourceFile: TFile | null };
+
 /** 同じ画像を二重に添付しないための識別子 */
 function selectedImageKey(image: SelectedImage): string {
 	if (image.vaultFile) return `vault:${image.vaultFile.path}`;
@@ -369,6 +386,333 @@ function parseUrlSafe(url: string): URL | null {
 	}
 }
 
+/**
+ * 投稿本文の Markdown を平文に変換した結果。
+ *
+ * Bluesky の投稿はプレーンテキストと facet の組み合わせで、facet の種類は
+ * link / mention / tag しかない（太字・斜体・見出しに相当するものは存在しない）。
+ * そのため「リンク記法だけ facet に変換し、他の記法はマーカーを外す」のが
+ * 表現できる限界になる。links には変換後テキスト上の位置を**文字単位**で持たせ、
+ * facet が要求するバイト位置への変換は detectFacets 側で行う。
+ */
+type MarkdownLink = { start: number; end: number; uri: string };
+type ConvertedMarkdown = { text: string; links: MarkdownLink[] };
+
+/** バックスラッシュでエスケープできる記号。エスケープされていれば記法として解釈しない */
+const MARKDOWN_ESCAPABLE = new Set(['\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '>', '~', '=', '|']);
+/** マーカーを外して中身だけ残す強調記法の記号 */
+const EMPHASIS_MARKERS = new Set(['*', '_', '~', '=']);
+
+const FENCE_LINE_REGEX = /^[ \t]{0,3}(`{3,}|~{3,})/;
+const HEADING_PREFIX_REGEX = /^[ \t]{0,3}#{1,6}[ \t]+/;
+// 見出しの閉じ記号（例: "## タイトル ##"）
+const HEADING_SUFFIX_REGEX = /[ \t]+#+[ \t]*$/;
+const BLOCKQUOTE_PREFIX_REGEX = /^[ \t]{0,3}(?:>[ \t]?)+/;
+const BULLET_PREFIX_REGEX = /^([ \t]*)[-*+][ \t]+/;
+const THEMATIC_BREAK_REGEX = /^[ \t]{0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/;
+/** 箇条書きのマーカーの置き換え先。記号を消すだけだと階層が読めなくなる */
+const BULLET_REPLACEMENT = '・';
+
+/**
+ * 行がコードブロックの囲みなら、その記号列を返す。
+ *
+ * バッククォートの囲みは、記号列より後ろにバッククォートを置けない（CommonMark）。
+ * この条件を見ないと `` ```コード``` `` と1行で書いたときに囲みの開始と誤判定し、
+ * その行が丸ごと消えたうえ、閉じる行が来ないので以降の行まで
+ * コードブロックの中身として扱われてしまう。
+ */
+function readFenceMarker(line: string): string | null {
+	const match = FENCE_LINE_REGEX.exec(line);
+	if (!match) return null;
+	const marker = match[1];
+	if (marker[0] === '`' && line.slice(match[0].length).includes('`')) return null;
+	return marker;
+}
+
+/**
+ * 行単位の記法（見出し・引用・箇条書き・水平線・コードブロック）を平文に落とす。
+ *
+ * 行頭だけを見る処理なので、文字単位の位置を記録するインライン変換より**先に**通す。
+ * 箇条書きの `*` を強調記法と読み違えずに済むのもこの順序による。
+ * 番号付きリストは平文のままでも読めるので手を入れない。
+ */
+function stripBlockMarkdown(source: string): string {
+	const lines: string[] = [];
+	let fence: string | null = null;
+	for (const line of source.split('\n')) {
+		const fenceMarker = readFenceMarker(line);
+		if (fence) {
+			// コードブロックの中身は記法として解釈せず、囲みの行だけ落とす
+			if (fenceMarker && fenceMarker[0] === fence[0] && fenceMarker.length >= fence.length) {
+				fence = null;
+				continue;
+			}
+			lines.push(line.trimEnd());
+			continue;
+		}
+		if (fenceMarker) {
+			fence = fenceMarker;
+			continue;
+		}
+		if (THEMATIC_BREAK_REGEX.test(line)) continue;
+		let stripped = line.replace(BLOCKQUOTE_PREFIX_REGEX, '');
+		if (HEADING_PREFIX_REGEX.test(stripped)) {
+			stripped = stripped.replace(HEADING_PREFIX_REGEX, '').replace(HEADING_SUFFIX_REGEX, '');
+		} else {
+			stripped = stripped.replace(BULLET_PREFIX_REGEX, `$1${BULLET_REPLACEMENT}`);
+		}
+		lines.push(stripped.trimEnd());
+	}
+	// 落とした行の分だけ空行が増えるので詰める（位置を記録する前なのでここで行う）
+	return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * `` `code` `` を読む。開始と同じ長さのバッククォート列で閉じている場合だけ記法として扱う。
+ */
+function readCodeSpan(source: string, start: number): { content: string; end: number } | null {
+	let run = 0;
+	while (source[start + run] === '`') run += 1;
+	const fence = '`'.repeat(run);
+	const contentStart = start + run;
+	let searchFrom = contentStart;
+	while (searchFrom < source.length) {
+		const closeIndex = source.indexOf(fence, searchFrom);
+		if (closeIndex === -1) return null;
+		let closeRun = 0;
+		while (source[closeIndex + closeRun] === '`') closeRun += 1;
+		// 長さが違う列は区切りにならないので読み飛ばす
+		if (closeRun !== run) {
+			searchFrom = closeIndex + closeRun;
+			continue;
+		}
+		return { content: source.slice(contentStart, closeIndex), end: closeIndex + run };
+	}
+	return null;
+}
+
+/** リンク先として facet に載せられるか。Bluesky でリンクとして扱われるのは http(s) だけ */
+function isHttpUri(uri: string): boolean {
+	return /^https?:\/\/\S+$/.test(uri);
+}
+
+/**
+ * `[表示テキスト](URL)` を読む。`[` の位置を渡す。
+ * URL に丸括弧を含むページ（Wikipedia 等）があるので、閉じ括弧は入れ子を数えて探す。
+ * 入力途中の壊れた記法を巻き込まないよう、行をまたぐ記法は成立させない。
+ */
+function readMarkdownLink(source: string, start: number): { label: string; uri: string; end: number } | null {
+	if (source[start] !== '[') return null;
+	let depth = 0;
+	let labelEnd = -1;
+	for (let i = start; i < source.length; i++) {
+		const char = source[i];
+		if (char === '\\') {
+			i += 1;
+			continue;
+		}
+		if (char === '\n') return null;
+		if (char === '[') depth += 1;
+		else if (char === ']') {
+			depth -= 1;
+			if (depth === 0) {
+				labelEnd = i;
+				break;
+			}
+		}
+	}
+	if (labelEnd === -1 || source[labelEnd + 1] !== '(') return null;
+	let parenDepth = 0;
+	let destEnd = -1;
+	for (let i = labelEnd + 1; i < source.length; i++) {
+		const char = source[i];
+		if (char === '\\') {
+			i += 1;
+			continue;
+		}
+		if (char === '\n') return null;
+		if (char === '(') parenDepth += 1;
+		else if (char === ')') {
+			parenDepth -= 1;
+			if (parenDepth === 0) {
+				destEnd = i;
+				break;
+			}
+		}
+	}
+	if (destEnd === -1) return null;
+	const dest = source.slice(labelEnd + 2, destEnd).trim();
+	// `<URL>` 形式と、投稿には出せない `"タイトル"` 部分を取り除く
+	const uri = dest.startsWith('<')
+		? dest.slice(1, dest.indexOf('>') === -1 ? dest.length : dest.indexOf('>'))
+		: dest.split(/\s/)[0];
+	return { label: source.slice(start + 1, labelEnd), uri, end: destEnd + 1 };
+}
+
+/**
+ * `[[ノート|表示名]]` を読む。vault 内のリンクは Bluesky では解決できないので、
+ * 表示名だけを平文として残す（記法のまま投稿すると文字数だけ消費する）。
+ */
+function readWikiLink(source: string, start: number): { display: string; end: number } | null {
+	if (source[start] !== '[' || source[start + 1] !== '[') return null;
+	const close = source.indexOf(']]', start + 2);
+	if (close === -1) return null;
+	const inner = source.slice(start + 2, close);
+	if (inner.includes('\n') || inner.includes('[')) return null;
+	// 別名があれば別名、なければ見出し・ブロック参照を除いたノート名を出す
+	const target = inner.includes('|') ? inner.slice(inner.lastIndexOf('|') + 1) : (inner.split('#')[0] || inner);
+	return { display: target.trim().replace(/^#+/, '').trim(), end: close + 2 };
+}
+
+/** `<https://example.com>` を読む。URL をそのまま出せば detectFacets がリンクにする */
+function readAutolink(source: string, start: number): { uri: string; end: number } | null {
+	const close = source.indexOf('>', start + 1);
+	if (close === -1) return null;
+	const inner = source.slice(start + 1, close);
+	if (!isHttpUri(inner)) return null;
+	return { uri: inner, end: close + 1 };
+}
+
+/**
+ * `**強調**` `*強調*` `~~取り消し~~` `==ハイライト==` を読む。
+ *
+ * Bluesky には太字も斜体も無いのでマーカーを外して中身だけ残す。
+ * CommonMark と同じく「開始マーカーの直後・終了マーカーの直前が空白でない」ことを
+ * 条件にしたうえで、CommonMark より狭く**単語の内側では成立させない**。
+ * `snake_case` や `2*3*4` の記号を投稿から消してしまうほうが害が大きいため
+ * （和文は `\w` に当たらないので「話**重要**です」のような書き方は成立する）。
+ */
+function readEmphasis(source: string, start: number): { content: string; end: number } | null {
+	const marker = source[start];
+	let run = 0;
+	while (source[start + run] === marker) run += 1;
+	// `~` と `=` は2つ並びだけが記法。`*` と `_` は1つでも成立する
+	const width = marker === '*' || marker === '_' ? Math.min(run, 2) : 2;
+	if (run < width) return null;
+	if (/\w/.test(source[start - 1] ?? '')) return null;
+	const contentStart = start + width;
+	const first = source[contentStart];
+	if (first === undefined || /\s/.test(first)) return null;
+	const closing = marker.repeat(width);
+	let searchFrom = contentStart;
+	while (searchFrom < source.length) {
+		const found = source.indexOf(closing, searchFrom);
+		if (found === -1 || found === contentStart) return null;
+		const content = source.slice(contentStart, found);
+		// 行をまたぐ強調は扱わない（これより後ろの候補も同じ改行を含む）
+		if (content.includes('\n')) return null;
+		const before = source[found - 1];
+		const after = source[found + width];
+		const closes = before !== undefined && !/\s/.test(before);
+		const outsideWord = after === undefined || !/\w/.test(after);
+		if (closes && outsideWord) return { content, end: found + width };
+		searchFrom = found + width;
+	}
+	return null;
+}
+
+/**
+ * 行内の記法を平文に変換し、リンク記法の位置を記録する。
+ * 強調やリンクの中にさらに記法が書けるので、中身は同じ処理を再帰させる。
+ */
+function convertInlineMarkdown(source: string): ConvertedMarkdown {
+	let text = '';
+	const links: MarkdownLink[] = [];
+	let index = 0;
+	while (index < source.length) {
+		const char = source[index];
+		if (char === '\\' && MARKDOWN_ESCAPABLE.has(source[index + 1] ?? '')) {
+			text += source[index + 1];
+			index += 2;
+			continue;
+		}
+		if (char === '`') {
+			const code = readCodeSpan(source, index);
+			if (code) {
+				text += code.content;
+				index = code.end;
+				continue;
+			}
+		}
+		if (char === '!' && source[index + 1] === '[') {
+			// 画像は添付として送る経路があるので、本文には alt だけを残す。
+			// `![[...]]` は表示名を出しても意味がないため丸ごと落とす
+			const embed = readWikiLink(source, index + 1);
+			if (embed) {
+				index = embed.end;
+				continue;
+			}
+			const image = readMarkdownLink(source, index + 1);
+			if (image) {
+				text += convertInlineMarkdown(image.label).text;
+				index = image.end;
+				continue;
+			}
+		}
+		if (char === '[' && source[index + 1] === '[') {
+			const wiki = readWikiLink(source, index);
+			if (wiki) {
+				text += wiki.display;
+				index = wiki.end;
+				continue;
+			}
+		}
+		if (char === '[') {
+			const link = readMarkdownLink(source, index);
+			if (link) {
+				// リンクの入れ子は Markdown でも許されないので、ラベル側のリンクは持ち上げない
+				const start = text.length;
+				text += convertInlineMarkdown(link.label).text;
+				if (isHttpUri(link.uri) && text.length > start) {
+					links.push({ start, end: text.length, uri: link.uri });
+				}
+				index = link.end;
+				continue;
+			}
+		}
+		if (char === '<') {
+			const autolink = readAutolink(source, index);
+			if (autolink) {
+				text += autolink.uri;
+				index = autolink.end;
+				continue;
+			}
+		}
+		if (EMPHASIS_MARKERS.has(char)) {
+			const emphasis = readEmphasis(source, index);
+			if (emphasis) {
+				const inner = convertInlineMarkdown(emphasis.content);
+				const offset = text.length;
+				text += inner.text;
+				for (const link of inner.links) {
+					links.push({ start: link.start + offset, end: link.end + offset, uri: link.uri });
+				}
+				index = emphasis.end;
+				continue;
+			}
+		}
+		text += char;
+		index += 1;
+	}
+	return { text, links };
+}
+
+/**
+ * 投稿本文に書かれた Markdown を、Bluesky に送れる平文とリンク範囲に変換する。
+ * 記法を落とした跡に残る前後の空白は詰める。先頭を削るとリンクの位置がずれるので、
+ * 削った分だけ記録済みの位置もずらす。
+ */
+function convertMarkdownForPost(source: string): ConvertedMarkdown {
+	const converted = convertInlineMarkdown(stripBlockMarkdown(source));
+	const shift = converted.text.length - converted.text.trimStart().length;
+	const links = shift === 0
+		? converted.links
+		: converted.links
+			.map((link) => ({ ...link, start: link.start - shift, end: link.end - shift }))
+			.filter((link) => link.start >= 0 && link.end > link.start);
+	return { text: converted.text.trim(), links };
+}
+
 type SegmenterCtor = new (
 	locales?: string | string[],
 	options?: { granularity?: 'grapheme' | 'word' | 'sentence' }
@@ -463,6 +807,23 @@ type LocaleStrings = {
 	linkTargetMissing: string;
 	saveImagesToVaultLabel: string;
 	saveImagesToVaultDesc: string;
+	convertMarkdownLabel: string;
+	convertMarkdownDesc: string;
+	confirmDraftOnCancelLabel: string;
+	confirmDraftOnCancelDesc: string;
+	draftNoteFolderLabel: string;
+	draftNoteFolderDesc: string;
+	draftSaveConfirmTitle: string;
+	draftSaveConfirmBody: string;
+	draftSaveConfirmUpdateBody: string;
+	draftSaveConfirmImages: string;
+	draftSaveConfirmSave: string;
+	draftSaveConfirmUpdate: string;
+	draftSaveConfirmDiscard: string;
+	draftSaveConfirmResume: string;
+	draftNoteCreated: string;
+	draftNoteUpdated: string;
+	draftNoteSaveFailed: string;
 };
 
 // 追加: 設定用インターフェース & デフォルト値
@@ -479,6 +840,9 @@ interface BlueskyPluginSettings {
 	draftLinkTarget: string;
 	historyLinkTarget: string;
 	saveImagesToVault: boolean;
+	convertMarkdown: boolean;
+	confirmDraftOnCancel: boolean;
+	draftNoteFolder: string;
 }
 
 const DEFAULT_SETTINGS: BlueskyPluginSettings = {
@@ -495,7 +859,12 @@ const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	draftLinkTarget: '',
 	historyLinkTarget: '',
 	// 端末から選んだ画像を vault に取り込むか。取り込まないとノートに埋め込めない
-	saveImagesToVault: true
+	saveImagesToVault: true,
+	// 既定は無効。`*` を強調のつもりではなく記号として見せたい書き方（Bluesky には
+	// 太字が無いため実際にある）を、更新だけで勝手に変えてしまわないため
+	convertMarkdown: false,
+	confirmDraftOnCancel: true,
+	draftNoteFolder: 'Bluesky Drafts'
 };
 
 // 履歴ノート(B)の種別を示す frontmatter 値
@@ -667,7 +1036,27 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			saveImagesToVaultLabel: '端末から選んだ画像をvaultに保存',
 			saveImagesToVaultDesc: '端末から添付した画像をvaultに取り込み、下書きノート・履歴ノートに埋め込みます。'
 				+ '保存先はObsidian本体の「添付ファイルの保存先」設定に従います。'
-				+ 'オフにすると投稿はできますが、ノートには画像が残りません（vault内の画像を選んだ場合は設定に関わらず記録されます）'
+				+ 'オフにすると投稿はできますが、ノートには画像が残りません（vault内の画像を選んだ場合は設定に関わらず記録されます）',
+			convertMarkdownLabel: 'Markdown記法を変換して投稿',
+			convertMarkdownDesc: '[表示テキスト](URL) をリンクとして投稿し、太字・見出し・箇条書き・コードなどの記号を取り除きます。'
+				+ 'Blueskyの投稿はプレーンテキストのため太字や斜体そのものは表現できません。'
+				+ 'オフにすると入力した記号がそのまま投稿されます（文字数も消費します）',
+			confirmDraftOnCancelLabel: '投稿せずに閉じたとき下書き保存を確認',
+			confirmDraftOnCancelDesc: '書きかけの投稿があるまま作成画面を閉じたとき、下書きノートに残すか尋ねます。'
+				+ '下書きノートから開いた場合は、そのノートを更新するか尋ねます',
+			draftNoteFolderLabel: '下書きノートの保存先',
+			draftNoteFolderDesc: '書きかけを保存する下書きノートを作成するフォルダ（存在しなければ自動作成）',
+			draftSaveConfirmTitle: '下書きノートを作成しますか？',
+			draftSaveConfirmBody: '書きかけの投稿内容があります。',
+			draftSaveConfirmUpdateBody: '編集内容を元の下書きノートに保存します',
+			draftSaveConfirmImages: '添付画像',
+			draftSaveConfirmSave: '下書きを作成',
+			draftSaveConfirmUpdate: '下書きを更新',
+			draftSaveConfirmDiscard: '破棄',
+			draftSaveConfirmResume: '編集に戻る',
+			draftNoteCreated: '下書きノートを作成しました',
+			draftNoteUpdated: '下書きノートを更新しました',
+			draftNoteSaveFailed: '下書きノートの保存に失敗しました'
 		};
 	}
 	// Default to English
@@ -755,7 +1144,27 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		saveImagesToVaultLabel: 'Save device images to the vault',
 		saveImagesToVaultDesc: 'Import images attached from the device into the vault and embed them in draft and history notes. '
 			+ "The location follows Obsidian's own attachment folder setting. "
-			+ 'When off, posting still works but no image is kept in the note (images chosen from the vault are recorded regardless)'
+			+ 'When off, posting still works but no image is kept in the note (images chosen from the vault are recorded regardless)',
+		convertMarkdownLabel: 'Convert Markdown before posting',
+		convertMarkdownDesc: 'Post [display text](URL) as a link and strip the markers of bold, headings, bullet lists, code and so on. '
+			+ 'Bluesky posts are plain text, so bold and italic themselves cannot be represented. '
+			+ 'When off, the markers are posted as typed and count towards the character limit',
+		confirmDraftOnCancelLabel: 'Ask to save a draft when closing',
+		confirmDraftOnCancelDesc: 'When the composer is closed with unsent content, ask whether to keep it in a draft note. '
+			+ 'When the composer was opened from a draft note, it asks whether to update that note instead',
+		draftNoteFolderLabel: 'Draft note folder',
+		draftNoteFolderDesc: 'Folder to create draft notes in when saving unsent content (created automatically if missing)',
+		draftSaveConfirmTitle: 'Save as a draft note?',
+		draftSaveConfirmBody: 'The composer still has unsent content.',
+		draftSaveConfirmUpdateBody: 'The edits will be saved back to the original draft note',
+		draftSaveConfirmImages: 'Attached images',
+		draftSaveConfirmSave: 'Save draft',
+		draftSaveConfirmUpdate: 'Update draft',
+		draftSaveConfirmDiscard: 'Discard',
+		draftSaveConfirmResume: 'Keep editing',
+		draftNoteCreated: 'Draft note created',
+		draftNoteUpdated: 'Draft note updated',
+		draftNoteSaveFailed: 'Failed to save the draft note'
 	};
 }
 				// (Removed stray malformed code block that caused syntax errors)
@@ -973,16 +1382,35 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			}
 		}
 	
-		detectFacets(text: string): Facet[] | undefined {
+		/**
+		 * 本文から facet を組み立てる。
+		 *
+		 * @param markdownLinks Markdown のリンク記法から得た範囲（文字単位）。
+		 *   表示テキストにURLやハッシュタグらしき文字列が含まれることがあるが、
+		 *   範囲の重なった facet を送ると Bluesky 側でリンクが壊れるため、
+		 *   ここで作った範囲と重なる URL・タグは facet にしない。
+		 */
+		detectFacets(text: string, markdownLinks: MarkdownLink[] = []): Facet[] | undefined {
 			const facets: Facet[] = [];
 			const encoder = new TextEncoder();
+			const byteOffsetOf = (charIndex: number) => encoder.encode(text.slice(0, charIndex)).length;
+			const reserved: FacetByteRange[] = [];
+			for (const link of markdownLinks) {
+				const index = { byteStart: byteOffsetOf(link.start), byteEnd: byteOffsetOf(link.end) };
+				if (index.byteEnd <= index.byteStart) continue;
+				reserved.push(index);
+				facets.push({ index, features: [{ $type: 'app.bsky.richtext.facet#link', uri: link.uri }] });
+			}
+			const overlapsReserved = (range: FacetByteRange) =>
+				reserved.some((taken) => range.byteStart < taken.byteEnd && taken.byteStart < range.byteEnd);
 			const linkRegex = createUrlRegex();
 			let match: RegExpExecArray | null;
 			while ((match = linkRegex.exec(text)) !== null) {
 				const rawUri = match[0];
 				const uri = trimTrailingPunctuation(rawUri);
-				const byteStart = encoder.encode(text.slice(0, match.index)).length;
+				const byteStart = byteOffsetOf(match.index);
 				const byteEnd = byteStart + encoder.encode(uri).length;
+				if (overlapsReserved({ byteStart, byteEnd })) continue;
 				const linkFacet: Facet = {
 					index: { byteStart, byteEnd },
 					features: [{ $type: 'app.bsky.richtext.facet#link', uri }]
@@ -994,8 +1422,9 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				const tag = match[0];
 				const tagWithoutHash = tag.slice(1);
 				if (countGraphemes(tagWithoutHash) > MAX_TAG_LENGTH) continue;
-				const byteStart = encoder.encode(text.slice(0, match.index)).length;
+				const byteStart = byteOffsetOf(match.index);
 				const byteEnd = byteStart + encoder.encode(tag).length;
+				if (overlapsReserved({ byteStart, byteEnd })) continue;
 				const tagFacet: Facet = {
 					index: { byteStart, byteEnd },
 					features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }]
@@ -1004,6 +1433,17 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			}
 			facets.sort((a, b) => a.index.byteStart - b.index.byteStart);
 			return facets.length > 0 ? facets : undefined;
+		}
+
+		/**
+		 * 入力された本文を、実際に投稿するテキストと Markdown 由来のリンク範囲に分ける。
+		 * 変換が無効なら入力をそのまま返すので、呼び出し側は設定を見ずに済む。
+		 * 文字数カウント・リンクプレビュー・投稿のすべてがここを通ることで、
+		 * 「カウンターの数字と実際に投稿される文字数が食い違う」事故を防いでいる。
+		 */
+		buildPostText(raw: string): ConvertedMarkdown {
+			if (!this.settings.convertMarkdown) return { text: raw, links: [] };
+			return convertMarkdownForPost(raw);
 		}
 	
 		async uploadBlob(blob: ArrayBuffer, mimeType: string): Promise<UploadBlobResponse> {
@@ -1062,7 +1502,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			throw new Error('画像アップロードに失敗しました');
 		}
 
-		async postToBluesky(text: string, embed?: Embed): Promise<PostResult> {
+		async postToBluesky(text: string, embed?: Embed, markdownLinks: MarkdownLink[] = []): Promise<PostResult> {
 			if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) {
 				new Notice(this.getLocale().postContentEmpty);
 				return { success: false };
@@ -1079,7 +1519,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 				createdAt: new Date().toISOString(),
 				$type: 'app.bsky.feed.post'
 			};
-			const facets = this.detectFacets(text);
+			const facets = this.detectFacets(text, markdownLinks);
 			if (facets) record.facets = facets;
 			if (embed) record.embed = embed;
 			try {
@@ -1158,15 +1598,98 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		/**
 		 * エディタの選択文字列（なければ先頭500文字）を初期値として投稿モーダルを開く
 		 */
-		openPostModal(initialText = '', sourceFile: TFile | null = null, initialImages: TFile[] = []) {
+		openPostModal(initialText = '', sourceFile: TFile | null = null, initialImages: TFile[] = [], resumeImages?: SelectedImage[]) {
 			if (this.activeModal) return;
 			// 予備ログイン（失敗しても無視）
 			if (!this.accessJwt) {
 				void this.login().catch(() => {});
 			}
-			const modal = new PostModal(this.app, this, initialText, sourceFile, initialImages);
+			const modal = new PostModal(this.app, this, initialText, sourceFile, initialImages, resumeImages);
 			this.activeModal = modal;
 			modal.open();
+		}
+
+		/**
+		 * 投稿せずに閉じたときに、書きかけを下書きノートへ残すか尋ねる。
+		 *
+		 * Obsidian の Modal.close() は同期で取り消せないため、確認は作成画面を
+		 * 閉じ切ったあとに出す。そのぶん「編集に戻る」は本文と添付を引き継いで
+		 * 作成画面を開き直す形で実現している。
+		 */
+		promptDraftSave(pending: PendingDraft): void {
+			// 別の作成画面が開いていれば邪魔しない（開き直しもできないため確認を出さない）
+			if (this.activeModal) return;
+			new DraftSaveConfirmModal(this.app, this, pending, {
+				onSave: () => { void this.saveDraftNote(pending); },
+				onResume: () => this.openPostModal(pending.text, pending.sourceFile, [], pending.images)
+			}).open();
+		}
+
+		/**
+		 * 書きかけの投稿を下書きノートとして残す。
+		 * 下書きノートから開いた投稿は元ノートを更新する（同じ内容のノートが2つ並ばないように）。
+		 * 元ノートが消えていた場合は新規作成に切り替える。
+		 */
+		private async saveDraftNote(pending: PendingDraft): Promise<void> {
+			const locale = this.getLocale();
+			try {
+				const existing = pending.sourceFile ? this.app.vault.getFileByPath(pending.sourceFile.path) : null;
+				const file = existing ? await this.updateDraftNote(existing, pending) : await this.createDraftNote(pending);
+				new Notice(`${existing ? locale.draftNoteUpdated : locale.draftNoteCreated}: ${file.basename}`);
+			} catch (error) {
+				console.error('[Post-To-Bluesky] Failed to save the draft note:', error);
+				new Notice(locale.draftNoteSaveFailed);
+			}
+		}
+
+		/** 書きかけを新しい下書きノートにする。下書き一覧に出るよう下書きプロパティを付ける */
+		private async createDraftNote(pending: PendingDraft): Promise<TFile> {
+			const now = new Date();
+			const rawFolder = this.settings.draftNoteFolder?.trim() || DEFAULT_SETTINGS.draftNoteFolder;
+			const folderPath = rawFolder === '/' ? '' : normalizePath(rawFolder);
+			if (folderPath && !this.app.vault.getFolderByPath(folderPath)) {
+				await this.app.vault.createFolder(folderPath);
+			}
+
+			const base = this.formatFileStamp(now);
+			const prefix = folderPath ? `${folderPath}/` : '';
+			let path = normalizePath(`${prefix}${base}.md`);
+			for (let i = 2; this.app.vault.getAbstractFileByPath(path); i++) {
+				path = normalizePath(`${prefix}${base} (${i}).md`);
+			}
+
+			// 履歴ノートと違い、ハッシュタグは frontmatter の tags に移さない。
+			// この本文はあとで実際に投稿されるので、タグを本文から抜くと投稿に付かなくなる
+			const frontmatter = [
+				'---',
+				`${this.settings.draftProperty || DEFAULT_SETTINGS.draftProperty}: ${this.settings.draftValue || DEFAULT_SETTINGS.draftValue}`,
+				'---'
+			].join('\n');
+			const noteFile = await this.app.vault.create(path, `${frontmatter}\n${pending.text}\n`);
+			// 画像の取り込みはノートを作ってから行う（履歴ノートと同じ理由。
+			// getAvailablePathForAttachment() は起点ノートの場所から保存先を決める）
+			const embeds = await this.collectImageEmbeds(pending.images, noteFile.path);
+			if (embeds.length > 0) {
+				await this.app.vault.append(noteFile, `${pending.text ? '\n' : ''}${embeds.join('\n')}\n`);
+			}
+			return noteFile;
+		}
+
+		/**
+		 * 下書きノートの本文を作成画面の内容に置き換える。
+		 * frontmatter は利用者のものなので手を付けない。添付画像は本文末尾に埋め込み直す
+		 * （作成画面は埋め込みを本文から外して画像として扱うので、元の位置には戻せない）。
+		 */
+		private async updateDraftNote(file: TFile, pending: PendingDraft): Promise<TFile> {
+			// ノートは既にあるので取り込み先も確定している。作成画面に残っている画像は
+			// 下書き由来のものも含めて書き直す（プレビューで外した画像はここで消える）
+			const embeds = await this.collectImageEmbeds(pending.images, file.path);
+			const body = [pending.text, embeds.join('\n')].filter((part) => part).join('\n\n');
+			await this.app.vault.process(file, (data) => {
+				const frontmatter = FRONTMATTER_BLOCK_REGEX.exec(data);
+				return `${frontmatter ? frontmatter[0] : ''}${body}\n`;
+			});
+			return file;
 		}
 
 		/**
@@ -1372,20 +1895,41 @@ class PostModal extends Modal {
 	isPosting = false;
 	outsideClickHandler?: (e: MouseEvent) => void;
 	private repositionEmojiPickerBound?: () => void;
+	/** 投稿を終えて閉じる場合は下書き保存を尋ねない */
+	private isPosted = false;
+	/**
+	 * 下書き保存の確認から「編集に戻る」で開き直した作成画面か。
+	 * この内容はまだどこにも保存されていないので、閉じるときは必ず確認を出す。
+	 */
+	private isUnsaved = false;
 
-	constructor(app: App, plugin: BlueskyPlugin, initialText = '', sourceFile: TFile | null = null, initialImages: TFile[] = []) {
+	constructor(
+		app: App,
+		plugin: BlueskyPlugin,
+		initialText = '',
+		sourceFile: TFile | null = null,
+		initialImages: TFile[] = [],
+		resumeImages?: SelectedImage[]
+	) {
 		super(app);
 		this.plugin = plugin;
 		this.initialText = initialText;
 		this.sourceFile = sourceFile;
-		// 下書きノートに埋め込まれていた画像は最初から添付済みにしておく。
-		// fromDraft を立てておくことで、投稿後に同じ画像を下書きへ書き戻さずに済む
-		this.selectedImages = initialImages.slice(0, MAX_IMAGES).map((file) => ({
-			name: file.name,
-			vaultFile: file,
-			deviceFile: null,
-			fromDraft: true
-		}));
+		if (resumeImages) {
+			// 「編集に戻る」で開き直した場合は添付をそのまま引き継ぐ。端末から選んだ画像は
+			// まだ vault に無く TFile で渡せないため SelectedImage のまま受け取る
+			this.selectedImages = resumeImages.slice(0, MAX_IMAGES);
+			this.isUnsaved = true;
+		} else {
+			// 下書きノートに埋め込まれていた画像は最初から添付済みにしておく。
+			// fromDraft を立てておくことで、投稿後に同じ画像を下書きへ書き戻さずに済む
+			this.selectedImages = initialImages.slice(0, MAX_IMAGES).map((file) => ({
+				name: file.name,
+				vaultFile: file,
+				deviceFile: null,
+				fromDraft: true
+			}));
+		}
 	}
 
 	toggleEmojiPicker(): void {
@@ -1731,7 +2275,8 @@ class PostModal extends Modal {
 	}
 
 	updateCharCount() {
-		const charCount = countGraphemes(this.textArea.value);
+		// Markdown変換が有効なときは記号が落ちて短くなるので、実際に投稿する側で数える
+		const charCount = countGraphemes(this.plugin.buildPostText(this.textArea.value).text);
 		this.charCountEl.textContent = `${charCount}/${MAX_POST_LENGTH}`;
 		const isOverLimit = charCount > MAX_POST_LENGTH;
 		this.charCountEl.toggleClass('bluesky-over-limit', isOverLimit);
@@ -1747,7 +2292,7 @@ class PostModal extends Modal {
 
 	async updateLinkPreview() {
 		if (this.selectedImages.length > 0) return;
-		const detected = extractFirstUrl(this.textArea.value);
+		const detected = this.detectPreviewUrl();
 		// 入力途中の不正なURLは未検出扱いにする
 		const url = detected && parseUrlSafe(detected) ? detected : null;
 		if (url && url === this.linkPreviewData?.url) return;
@@ -1764,6 +2309,20 @@ class PostModal extends Modal {
 		} else {
 			this.pendingLinkPreviewUrl = null;
 		}
+	}
+
+	/**
+	 * リンクカードの対象URLを決める。
+	 * Markdown変換が有効なら `[表示テキスト](URL)` の URL は本文から消えるので、
+	 * 記法から取れた URL もカードの候補に入れる。素のURLと両方ある場合は先に
+	 * 書かれているほうを使う（変換なしのときと同じ「最初のURL」という基準を保つ）。
+	 */
+	private detectPreviewUrl(): string | null {
+		const prepared = this.plugin.buildPostText(this.textArea.value);
+		const bare = findFirstUrl(prepared.text);
+		const markdownLink = prepared.links[0];
+		if (bare && markdownLink) return bare.index < markdownLink.start ? bare.url : markdownLink.uri;
+		return bare?.url ?? markdownLink?.uri ?? null;
 	}
 
 	async fetchLinkPreview(url: string): Promise<LinkPreviewData | null> {
@@ -1809,11 +2368,13 @@ class PostModal extends Modal {
 
 	async handlePost() {
 		if (this.isPosting) return;
-		const text = this.textArea.value.trim();
-		if (!text && this.selectedImages.length === 0) {
+		const raw = this.textArea.value.trim();
+		if (!raw && this.selectedImages.length === 0) {
 			new Notice(this.plugin.getLocale().pleaseEnterContent);
 			return;
 		}
+		// ノートには入力したままの Markdown を残す。投稿には変換後のテキストを送る
+		const prepared = this.plugin.buildPostText(raw);
 		this.isPosting = true;
 		this.postButton.setButtonText(this.plugin.getLocale().posting).setDisabled(true);
 		try {
@@ -1866,9 +2427,10 @@ class PostModal extends Modal {
 			};
 		}
 
-			const result = await this.plugin.postToBluesky(text, embed);
+			const result = await this.plugin.postToBluesky(prepared.text, embed, prepared.links);
 			if (result.success) {
-				await this.plugin.recordPostResult(text, result.postUrl, this.sourceFile, this.selectedImages);
+				await this.plugin.recordPostResult(raw, result.postUrl, this.sourceFile, this.selectedImages);
+				this.isPosted = true;
 				this.close();
 			} else if (this.plugin.activeModal === this) {
 				this.postButton.setButtonText(this.plugin.getLocale().post).setDisabled(false);
@@ -1879,11 +2441,122 @@ class PostModal extends Modal {
 	}
 
 		onClose() {
+		// contentEl を空にする前に、下書きへ残す内容を取り出しておく
+		const pending = this.collectPendingDraft();
 		if (this.plugin.activeModal === this) this.plugin.activeModal = null;
 		if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
 		this.releasePreviewObjectUrls();
 		this.contentEl.empty();
+		// Modal.close() は同期で取り消せないので、閉じ切ってから確認を出す
+		if (pending) window.setTimeout(() => this.plugin.promptDraftSave(pending), 0);
+	}
+
+	/**
+	 * 投稿せずに閉じたときに下書きへ残す内容を取り出す。残すものが無ければ null を返す。
+	 *
+	 * 開いた時点から何も変わっていない場合に確認を出さないのは、Esc で閉じるたびに
+	 * 聞かれるのを避けるため。下書きノートから開いた場合の「変わっていない」は
+	 * 元ノートに同じ内容があるという意味なので、閉じても失われるものはない。
+	 */
+	private collectPendingDraft(): PendingDraft | null {
+		if (this.isPosted || this.isPosting) return null;
+		if (!this.plugin.settings.confirmDraftOnCancel) return null;
+		if (!this.textArea) return null;
+		const text = this.textArea.value.trim();
+		if (!text && this.selectedImages.length === 0) return null;
+		if (!this.isUnsaved) {
+			const addedImages = this.selectedImages.some((image) => !image.fromDraft);
+			if (text === this.baselineText() && !addedImages) return null;
+		}
+		return { text, images: [...this.selectedImages], sourceFile: this.sourceFile };
+	}
+
+	/** 開いた直後の本文。通常起動では自動挿入したデフォルトハッシュタグが入っている */
+	private baselineText(): string {
+		if (this.initialText) return this.initialText.trim();
+		return this.plugin.settings.defaultHashtags?.trim() ?? '';
+	}
+}
+
+/**
+ * 投稿せずに作成画面を閉じたときに、書きかけを下書きノートへ残すか尋ねるモーダル。
+ *
+ * Esc や外側クリックで閉じた場合は「編集に戻る」と同じ扱いにする。書きかけを
+ * 黙って捨てないための既定で、破棄するときは明示的にボタンを押させる。
+ */
+class DraftSaveConfirmModal extends Modal {
+	private plugin: BlueskyPlugin;
+	private pending: PendingDraft;
+	private handlers: { onSave: () => void; onResume: () => void };
+	private choice: 'save' | 'discard' | 'resume' = 'resume';
+
+	constructor(
+		app: App,
+		plugin: BlueskyPlugin,
+		pending: PendingDraft,
+		handlers: { onSave: () => void; onResume: () => void }
+	) {
+		super(app);
+		this.plugin = plugin;
+		this.pending = pending;
+		this.handlers = handlers;
+	}
+
+	onOpen(): void {
+		const locale = this.plugin.getLocale();
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass('bluesky-confirm-modal');
+		this.setTitle(locale.draftSaveConfirmTitle);
+
+		const isUpdate = this.pending.sourceFile !== null;
+		contentEl.createEl('p', { text: locale.draftSaveConfirmBody });
+		if (isUpdate) {
+			contentEl.createEl('p', {
+				cls: 'bluesky-confirm-note',
+				text: `${locale.draftSaveConfirmUpdateBody}: ${this.pending.sourceFile?.basename}`
+			});
+		}
+		if (this.pending.images.length > 0) {
+			contentEl.createEl('p', {
+				cls: 'bluesky-confirm-note',
+				text: `${locale.draftSaveConfirmImages}: ${this.pending.images.length}`
+			});
+		}
+
+		const buttonsEl = contentEl.createDiv({ cls: 'bluesky-confirm-buttons' });
+		const saveButton = new ButtonComponent(buttonsEl)
+			.setButtonText(isUpdate ? locale.draftSaveConfirmUpdate : locale.draftSaveConfirmSave)
+			.setCta()
+			.onClick(() => this.chooseAndClose('save'));
+		// 破棄だけ色を変えて区別する。setWarning() は非推奨で、代わりの setDestructive() は
+		// minAppVersion(1.8.7) には無いため、同じ見た目になるクラスを直接付ける
+		const discardButton = new ButtonComponent(buttonsEl)
+			.setButtonText(locale.draftSaveConfirmDiscard)
+			.onClick(() => this.chooseAndClose('discard'));
+		discardButton.buttonEl.addClass('mod-warning');
+		new ButtonComponent(buttonsEl)
+			.setButtonText(locale.draftSaveConfirmResume)
+			.onClick(() => this.chooseAndClose('resume'));
+		// Enter で保存できるようにしておく（Esc は編集に戻る）
+		window.setTimeout(() => saveButton.buttonEl.focus(), 0);
+	}
+
+	private chooseAndClose(choice: 'save' | 'discard' | 'resume'): void {
+		this.choice = choice;
+		this.close();
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		// 作成画面を開き直す場合があるため、こちらが閉じ切ってから実行する
+		const choice = this.choice;
+		if (choice === 'discard') return;
+		window.setTimeout(() => {
+			if (choice === 'save') this.handlers.onSave();
+			else this.handlers.onResume();
+		}, 0);
 	}
 }
 
@@ -1985,11 +2658,12 @@ class DraftSelectModal extends Modal {
 		if (typeof end === 'number' && end <= content.length) {
 			return content.slice(end).trim();
 		}
-		return content.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/, '').trim();
+		return content.replace(FRONTMATTER_BLOCK_REGEX, '').trim();
 	}
 
 	renderDraftItem(listEl: HTMLElement, file: TFile, draft: DraftContent): void {
-		const count = countGraphemes(draft.body);
+		// 作成画面のカウンターと同じ基準で数える（Markdown変換が有効なら記号は落ちる）
+		const count = countGraphemes(this.plugin.buildPostText(draft.body).text);
 		const itemEl = listEl.createDiv({ cls: 'bluesky-draft-item', attr: { role: 'button', tabindex: '0' } });
 		setIcon(itemEl.createSpan({ cls: 'bluesky-draft-icon' }), 'file-text');
 		itemEl.createSpan({ cls: 'bluesky-draft-name', text: file.basename });
@@ -2164,6 +2838,11 @@ class BlueskySettingTab extends PluginSettingTab {
 				control: { type: 'text', key: 'defaultHashtags', placeholder: locale.hashtagsPlaceholder }
 			},
 			{
+				name: locale.convertMarkdownLabel,
+				desc: locale.convertMarkdownDesc,
+				control: { type: 'toggle', key: 'convertMarkdown', defaultValue: DEFAULT_SETTINGS.convertMarkdown }
+			},
+			{
 				name: locale.draftPropertyLabel,
 				desc: locale.draftPropertyDesc,
 				control: { type: 'text', key: 'draftProperty', placeholder: DEFAULT_SETTINGS.draftProperty, defaultValue: DEFAULT_SETTINGS.draftProperty }
@@ -2172,6 +2851,23 @@ class BlueskySettingTab extends PluginSettingTab {
 				name: locale.draftValueLabel,
 				desc: locale.draftValueDesc,
 				control: { type: 'text', key: 'draftValue', placeholder: DEFAULT_SETTINGS.draftValue, defaultValue: DEFAULT_SETTINGS.draftValue }
+			},
+			{
+				name: locale.confirmDraftOnCancelLabel,
+				desc: locale.confirmDraftOnCancelDesc,
+				control: { type: 'toggle', key: 'confirmDraftOnCancel', defaultValue: DEFAULT_SETTINGS.confirmDraftOnCancel }
+			},
+			{
+				name: locale.draftNoteFolderLabel,
+				desc: locale.draftNoteFolderDesc,
+				control: {
+					type: 'folder',
+					key: 'draftNoteFolder',
+					placeholder: DEFAULT_SETTINGS.draftNoteFolder,
+					defaultValue: DEFAULT_SETTINGS.draftNoteFolder,
+					includeRoot: true,
+					disabled: () => !this.plugin.settings.confirmDraftOnCancel
+				}
 			},
 			{
 				name: locale.postHistoryLabel,
@@ -2246,11 +2942,11 @@ class BlueskySettingTab extends PluginSettingTab {
 			value = Number.isFinite(n) ? Math.min(Math.max(Math.round(n), 1000), 60000) : 15000;
 		}
 		(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
-		// 履歴トグルの状態は保存先フォルダ欄と履歴ノート紐づけ先欄の disabled 判定に
+		// トグルの状態は依存する欄（保存先フォルダ・紐づけ先）の disabled 判定に
 		// 使われるため再評価させる
 		// refreshDomState() は 1.13.0 で追加されたAPI。この経路自体が宣言的レンダラ
 		// （1.13+）からしか呼ばれないが、minAppVersion が 1.8.7 なので明示的にガードする
-		if (requireApiVersion('1.13.0') && key === 'postHistoryEnabled') this.refreshDomState();
+		if (requireApiVersion('1.13.0') && (key === 'postHistoryEnabled' || key === 'confirmDraftOnCancel')) this.refreshDomState();
 		return this.plugin.saveSettings();
 	}
 
@@ -2312,6 +3008,16 @@ class BlueskySettingTab extends PluginSettingTab {
 		const locale = this.plugin.getLocale();
 
 		new Setting(containerEl)
+			.setName(locale.convertMarkdownLabel)
+			.setDesc(locale.convertMarkdownDesc)
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.convertMarkdown)
+				.onChange(async (value) => {
+					this.plugin.settings.convertMarkdown = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
 			.setName(locale.draftPropertyLabel)
 			.setDesc(locale.draftPropertyDesc)
 			.addText(text => text
@@ -2332,6 +3038,44 @@ class BlueskySettingTab extends PluginSettingTab {
 					this.plugin.settings.draftValue = value;
 					await this.plugin.saveSettings();
 				}));
+
+		// 下書き保存の確認に依存する欄も、履歴側と同じくトグルに追従させる
+		const draftSaveDependent: { setting: Setting | null; text: TextComponent | null } = { setting: null, text: null };
+		const applyDraftSaveDisabled = () => {
+			const disabled = !this.plugin.settings.confirmDraftOnCancel;
+			draftSaveDependent.setting?.setDisabled(disabled);
+			draftSaveDependent.text?.setDisabled(disabled);
+		};
+
+		new Setting(containerEl)
+			.setName(locale.confirmDraftOnCancelLabel)
+			.setDesc(locale.confirmDraftOnCancelDesc)
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.confirmDraftOnCancel)
+				.onChange(async (value) => {
+					this.plugin.settings.confirmDraftOnCancel = value;
+					await this.plugin.saveSettings();
+					applyDraftSaveDisabled();
+				}));
+
+		draftSaveDependent.setting = new Setting(containerEl)
+			.setName(locale.draftNoteFolderLabel)
+			.setDesc(locale.draftNoteFolderDesc)
+			.addText(text => {
+				draftSaveDependent.text = text;
+				text.setPlaceholder(DEFAULT_SETTINGS.draftNoteFolder)
+					.setValue(this.plugin.settings.draftNoteFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.draftNoteFolder = value;
+						await this.plugin.saveSettings();
+					});
+				new FolderSuggest(this.app, text.inputEl, (path) => {
+					text.setValue(path);
+					this.plugin.settings.draftNoteFolder = path;
+					void this.plugin.saveSettings();
+				});
+			});
+		applyDraftSaveDisabled();
 
 		// 履歴に依存する欄はトグルに追従してグレーアウトさせる。display() を呼び直すと
 		// 設定画面ごと作り直しになり入力中のフォーカスも飛ぶので、該当欄だけを更新する
