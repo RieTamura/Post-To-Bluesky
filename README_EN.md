@@ -10,12 +10,26 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 
 - **Create Post**: Open the post modal to compose freely and send to Bluesky
 
+### ✍️ Write in Markdown (off by default)
+
+- `[display text](URL)` is posted as **a real link** (long URLs no longer eat into the 300 characters)
+- Markers for bold, italic, headings, bullet lists, code and quotes are **stripped**
+- `[[note name|display name]]` keeps only the display name
+- Bluesky posts are plain text, so **bold and italic themselves cannot be represented** (see below)
+
 ### 📄 Post from Draft Notes
 
 - Use any note in your vault as a draft
 - Notes with `type: bluesky-draft` in their frontmatter appear in the draft list
 - The list shows a character count badge (red when over 300)
 - Posting updates the draft note itself to a posted state (see below)
+
+### 💾 Keep Unsent Content as a Draft Note
+
+- Closing the composer without posting asks whether to keep the content in a draft note (on by default)
+- Three choices: "Save draft", "Discard", "Keep editing". Esc and clicking outside count as "Keep editing"
+- When the composer was opened from a draft note, **that note is updated** instead of creating a new one
+- Attached images are kept as well
 
 ### 📋 Automatic Post History Notes
 
@@ -52,9 +66,11 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 
 - Bluesky account (handle + app password)
 - Default hashtags
+- Whether Markdown is converted before posting
 - Network timeout
 - Custom hotkeys
 - Draft detection rule (frontmatter key and value)
+- Whether closing the composer asks to save a draft, and the folder those drafts go to
 - Post history saving and its destination folder
 - Link target notes and the property name the link is written to
 - Whether images picked from the device are saved into the vault
@@ -248,6 +264,77 @@ Behaviour depends on how the target is written.
 
 Either way the post itself is still treated as successful.
 
+### 2-4. Writing a Post in Markdown
+
+Turning on "Convert Markdown before posting" converts the Markdown you type into plain text
+before it is sent to Bluesky (off by default).
+
+**Know this first: Bluesky posts are plain text.** A post record carries text plus facets, and
+the only facet types are link, mention and tag — there is no facet for decoration, so
+**bold and italic themselves cannot be posted**. All this plugin can do is turn link syntax into
+a real link and strip the markers it cannot represent.
+
+| What you type | What gets posted |
+|---|---|
+| `[here](https://example.com/very-long-url)` | **here** (a clickable link) |
+| `**bold**` / `*italic*` / `~~strike~~` / `==highlight==` | bold / italic / strike / highlight (markers removed) |
+| `## Heading` | Heading |
+| `- bullet` | ・bullet |
+| `1. numbered` | 1. numbered (left as is) |
+| `` `code` `` / ```` ```code block``` ```` | code / code block (fences removed) |
+| `> quote` | quote |
+| `[[note name]]` / `[[note name\|display name]]` | note name / display name |
+| `<https://example.com>` | https://example.com |
+| `\*kept as symbols\*` | \*kept as symbols\* (backslash escape) |
+
+#### How Markdown Actually Looks on Bluesky
+
+The conversion applies to every syntax listed above, but **only two of them leave a visible result
+on Bluesky: links and bullets.**
+
+| Result | Syntax |
+|---|---|
+| **Visible on Bluesky** | `[display text](URL)` (becomes a blue link), `- bullet` (`・` remains), `1. numbered` (left as is) |
+| **Markers simply disappear** | `**bold**` / `*italic*` / `## Heading` / `> quote` / `~~strike~~` / `==highlight==` / `` `code` `` / code blocks |
+
+Bold and headings turning into plain text is **the intended result, not a failed conversion**.
+A Bluesky post record carries only plain text plus facets (link, mention, tag), and no facet for
+decoration exists in the spec, so no client can render one.
+
+The value of this setting is therefore not "adding decoration" but **being able to use a note written
+the normal Obsidian way as a draft without leaving marker litter in the post**. While off, `**bold**`
+is posted with its markers and eats four extra characters of the 300 limit.
+
+Notes:
+
+- **The character counter counts the converted text**, so it reads shorter than what you typed
+- With `[display text](URL)`, the link card (URL preview) is built from that URL
+- **`snake_case` and `2*3*4` are left alone.** Markers inside a word are not treated as syntax,
+  so symbols never disappear unintentionally
+- History and draft notes keep **the Markdown as you typed it**, not the converted plain text
+- While off, `**` and `#` are posted as typed and count towards the character limit
+
+### 2-5. Keeping Unsent Content as a Draft
+
+Closing the composer with unsent content asks whether to keep it in a draft note (on by default).
+
+- **Save draft**: creates a new note in the "Draft note folder". It gets the draft frontmatter
+  property, so it shows up in the draft list right away
+- **Discard**: does nothing
+- **Keep editing**: reopens the composer with the text and attached images.
+  **Esc and clicking outside behave the same way**, so unsent content is never dropped silently
+
+When the composer was opened from a draft note this becomes "Update draft" and **rewrites that
+note**. The frontmatter is left untouched. Attached images are re-embedded at the end of the note
+(the composer takes embeds out of the body and handles them as attachments, so their original
+positions cannot be restored).
+
+You are not asked when:
+
+- the text is empty and no image is attached
+- nothing changed since the composer was opened (for example opening a draft note and closing it)
+- "Ask to save a draft when closing" is off
+
 ### 3. Editing a Post
 
 - Edit text freely
@@ -289,12 +376,22 @@ Either way the post itself is still treated as successful.
 - **App Password**: Bluesky app password (app-specific)
 - **Default Hashtags**: Automatically appended hashtags
   - Not inserted when composing from a draft note, to avoid eating into the 300-character limit
+- **Convert Markdown before posting**: Post `[display text](URL)` as a link and strip the markers of
+  bold, headings, bullet lists and so on (default: **off**)
+  - It is off by default because Bluesky has no bold, so some people type `*` meaning the symbol
+    itself. Updating the plugin should not silently change what gets posted
+  - See [Usage 2-4](#2-4-writing-a-post-in-markdown) for exactly what is converted
 - **Network Timeout**: Request timeout (ms)
 
 ### Drafts
 
 - **Draft property name**: Frontmatter key used to identify draft notes (default: `type`)
 - **Draft property value**: Value for the key above. Notes with this value appear in the draft list (default: `bluesky-draft`)
+- **Ask to save a draft when closing**: Ask whether to keep unsent content in a draft note when the
+  composer is closed (default: on)
+- **Draft note folder**: Folder those draft notes are created in (default: `Bluesky Drafts`)
+  - An input with vault folder suggestions. A folder name that does not exist yet is created when saving
+  - Greyed out while "Ask to save a draft when closing" is off
 
 ### Post History
 
@@ -369,6 +466,12 @@ Both targets are inputs with vault note suggestions, and accept date variables s
    vault, so there is nothing for the note to embed. Images picked from the vault are
    always recorded
 
+6. **`**` or `#` shows up in the posted text**: "Convert Markdown before posting" is off
+   (that is the default). Turn it on in settings
+
+7. **Closing the composer does not ask to save a draft**: nothing is asked when the text has not
+   changed since the composer was opened, or when "Ask to save a draft when closing" is off
+
 ### Logs
 
 - Use Obsidian developer console for errors
@@ -418,8 +521,29 @@ Released under the 0BSD license.
 - Images cannot be added by drag & drop or paste; use the button or the command
 - 300 characters per post (an error is shown before sending if exceeded)
 - No automatic retry on rate limit errors — you get a notice and resend after waiting
+- **Bluesky posts have no bold, italic or headings.** A post record can only carry plain text plus
+  facets (link, mention, tag) — the format simply has no facet for decoration. Markdown conversion
+  can therefore only turn link syntax into links and strip what cannot be represented
+- Embeds other than images, such as `![[another note]]`, are posted as literal syntax while
+  Markdown conversion is off (with it on, only the display name is kept)
 
 ## Changelog
+
+### v0.5.0
+
+- **Added a setting to convert Markdown before posting** (default: off).
+  `[display text](URL)` is posted as a real link, and the markers of bold, headings, bullet lists,
+  code, quotes and `[[wikilinks]]` are stripped
+  - The character counter now counts the converted text (so does the badge in the draft list)
+  - With `[display text](URL)`, the link card is built from that URL
+  - History and draft notes keep the Markdown as you typed it
+- **Closing the composer without posting now asks whether to keep the content as a draft note**
+  (default: on). Three choices — "Save draft", "Discard", "Keep editing" — with Esc and clicking
+  outside counting as "Keep editing"
+- When the composer was opened from a draft note, that note is updated instead of creating a new one
+- Attached images are kept too (images picked from the device are imported into the vault)
+- Three new settings (Convert Markdown before posting, Ask to save a draft when closing,
+  Draft note folder)
 
 ### v0.4.0
 

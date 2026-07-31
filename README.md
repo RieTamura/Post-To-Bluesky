@@ -6,12 +6,14 @@
 
 ---
 
-**Version / バージョン**: 0.4.0
+**Version / バージョン**: 0.5.0
 
 **Features (EN)**:
 
 - Post to Bluesky from Obsidian
+- Write in Markdown — link syntax becomes a real link, other markers are stripped (off by default)
 - Post from draft notes in your vault
+- Keep unsent content as a draft note when you close the composer
 - Automatic post history notes
 - Link posts to a note of your choice (date variables supported)
 - Desktop and mobile
@@ -23,7 +25,9 @@
 **機能概要 (JP)**:
 
 - ObsidianからBlueskyへ投稿
+- Markdown記法で投稿文を書く（リンク記法は本物のリンクに、他の記号は除去。既定はオフ）
 - vault内の下書きノートから投稿
+- 投稿せずに閉じたとき、書きかけを下書きノートに残す
 - 投稿履歴ノートの自動作成
 - 任意のノートへの紐づけ（日付変数に対応）
 - デスクトップ・モバイル両対応
