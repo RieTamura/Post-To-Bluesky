@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, AbstractInputSuggest, FuzzySuggestModal, Menu, getLinkpath, normalizePath, requireApiVersion, moment, TFile, TFolder, Modifier } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, AbstractInputSuggest, FuzzySuggestModal, Menu, getLinkpath, normalizePath, Platform, requireApiVersion, moment, TFile, TFolder, Modifier } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse, SettingDefinitionItem } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -748,6 +748,7 @@ type LocaleStrings = {
 	noImagesInVault: string;
 	imageSaveFailed: string;
 	addEmoji: string;
+	dismissKeyboard: string;
 	hotkeys: string;
 	placeholderText: string;
 	handleLabel: string;
@@ -974,6 +975,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			noImagesInVault: 'vault内に画像が見つかりませんでした',
 			imageSaveFailed: '画像のvaultへの保存に失敗しました',
 			addEmoji: '絵文字追加',
+			dismissKeyboard: 'キーボードを閉じる',
 			hotkeys: 'ホットキー',
 			placeholderText: '投稿内容を入力...',
 			handleLabel: 'ハンドル',
@@ -1082,6 +1084,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		noImagesInVault: 'No images found in the vault',
 		imageSaveFailed: 'Failed to save the image to the vault',
 		addEmoji: 'Add emoji',
+		dismissKeyboard: 'Dismiss keyboard',
 		hotkeys: 'Hotkeys',
 		placeholderText: 'Enter post content...',
 		handleLabel: 'Handle',
@@ -1886,6 +1889,7 @@ class PostModal extends Modal {
 	charCountEl!: HTMLElement;
 	fileInput: HTMLInputElement | null = null;
 	imageButtonEl!: HTMLElement; // 添付元メニューの表示位置に使う
+	keyboardDismissEl: HTMLElement | null = null; // モバイルのみ。入力中だけ表示する
 	sourceFile: TFile | null = null; // 下書きノート由来の投稿のみ設定される
 	selectedImages: SelectedImage[] = [];
 	linkPreviewData: LinkPreviewData | null = null;
@@ -1978,6 +1982,26 @@ class PostModal extends Modal {
 			.setButtonText(this.plugin.getLocale().cancel)
 			.onClick(() => this.close());
 
+		// キーボードを閉じるボタン（モバイルのみ）。
+		// textarea には改行キーしかなくソフトキーボードを閉じる手段が無い。iOS では
+		// キーボードが出ても layout viewport が縮まないため、閉じられないままだと
+		// フッターの画像ボタンや文字数カウンタがキーボードの裏に隠れて操作できない。
+		if (Platform.isMobile) {
+			const dismissBtn = new ButtonComponent(headerEl)
+				.setIcon('keyboard-off')
+				.setTooltip(this.plugin.getLocale().dismissKeyboard)
+				.onClick(() => this.textArea.blur());
+			const dismissEl = dismissBtn.buttonEl;
+			dismissEl.addClass('bluesky-keyboard-dismiss');
+			// click を待つと、先にフォーカスが外れてボタンが隠れた場合に取りこぼす。
+			// preventDefault でフォーカス移動も止めて、押した時点で確実に閉じる
+			dismissEl.addEventListener('mousedown', (e) => {
+				e.preventDefault();
+				this.textArea.blur();
+			});
+			this.keyboardDismissEl = dismissEl;
+		}
+
 		// 投稿ボタン
 		this.postButton = new ButtonComponent(headerEl)
 			.setButtonText(this.plugin.getLocale().post)
@@ -2003,11 +2027,23 @@ class PostModal extends Modal {
 		// モーダル表示時にカーソルをテキストエリア先頭（左端）へ移動
 		// （ハッシュタグ挿入済みでも先頭に配置する要求仕様）
 		// 下書き本文をセットした場合のみ、続けて編集できるよう末尾へ置く
-		const caretPos = this.initialText ? this.textArea.value.length : 0;
-		window.setTimeout(() => {
-			this.textArea.focus();
-			this.textArea.setSelectionRange(caretPos, caretPos);
-		}, 0);
+		// モバイルでは自動フォーカスしない。開いた直後にキーボードが出ると、その裏に
+		// フッター（画像ボタン・文字数カウンタ）が隠れて画像を添付できなくなるため、
+		// 本文をタップして初めてキーボードを出す
+		if (!Platform.isMobile) {
+			const caretPos = this.initialText ? this.textArea.value.length : 0;
+			window.setTimeout(() => {
+				this.textArea.focus();
+				this.textArea.setSelectionRange(caretPos, caretPos);
+			}, 0);
+		}
+
+		// 閉じるボタンは本文入力中だけ出す（キーボードが無いときは押しても意味がない）
+		if (this.keyboardDismissEl) {
+			const dismissEl = this.keyboardDismissEl;
+			this.textArea.addEventListener('focus', () => dismissEl.addClass('is-visible'));
+			this.textArea.addEventListener('blur', () => dismissEl.removeClass('is-visible'));
+		}
 
 		this.linkPreviewContainer = contentEl.createDiv({ cls: 'bluesky-preview-container' });
 		this.imagePreviewContainer = contentEl.createDiv({ cls: 'bluesky-image-preview-container' });
@@ -2447,6 +2483,7 @@ class PostModal extends Modal {
 		if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
 		this.hideEmojiPicker();
 		this.releasePreviewObjectUrls();
+		this.keyboardDismissEl = null;
 		this.contentEl.empty();
 		// Modal.close() は同期で取り消せないので、閉じ切ってから確認を出す
 		if (pending) window.setTimeout(() => this.plugin.promptDraftSave(pending), 0);

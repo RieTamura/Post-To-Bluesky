@@ -13,6 +13,18 @@
   margin-top: 10px;
 }
 
+/* キーボードを閉じるボタン（モバイルのみ生成）。本文入力中だけ表示する。
+   ヘッダーは space-between なので、出ても左右のキャンセル／投稿の位置は動かない */
+.bluesky-keyboard-dismiss {
+  display: none;
+}
+
+.bluesky-keyboard-dismiss.is-visible {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .bluesky-modal-main {
   display: flex;
   flex-grow: 1;
