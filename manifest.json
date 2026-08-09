@@ -2,7 +2,7 @@
 	"id": "post-to-bluesky",
 	"name": "Post To Bluesky",
 	"version": "0.5.1",
-	"minAppVersion": "1.8.7",
+	"minAppVersion": "1.11.5",
 	"description": "Post selected text or entire note to Bluesky.",
 	"author": "RieTamura",
 	"authorUrl": "https://github.com/RieTamura",

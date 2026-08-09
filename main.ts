@@ -1,4 +1,4 @@
-import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, AbstractInputSuggest, FuzzySuggestModal, Menu, getLinkpath, normalizePath, Platform, requireApiVersion, moment, TFile, TFolder, Modifier } from 'obsidian';
+import { Notice, App, Modal, ButtonComponent, Setting, TextComponent, SecretComponent, PluginSettingTab, requestUrl, setIcon, Plugin, getLanguage, AbstractInputSuggest, FuzzySuggestModal, Menu, getLinkpath, normalizePath, Platform, requireApiVersion, moment, TFile, TFolder, Modifier } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse, SettingDefinitionItem } from 'obsidian';
 
 // 統一された絵文字リスト（複数箇所の重複定義を解消）
@@ -756,7 +756,9 @@ type LocaleStrings = {
 	handlePlaceholder: string;
 	passwordLabel: string;
 	passwordDesc: string;
-	passwordPlaceholder: string;
+	passwordMigrated: string;
+	passwordMigrationFailed: string;
+	passwordSecretMissing: string;
 	timeoutLabel: string;
 	timeoutDesc: string;
 	timeoutPlaceholder: string;
@@ -830,7 +832,11 @@ type LocaleStrings = {
 // 追加: 設定用インターフェース & デフォルト値
 interface BlueskyPluginSettings {
 	handle: string;
-	password: string;
+	/**
+	 * アプリパスワードそのものではなく、Obsidian のキーチェーン(Secret Storage)上の
+	 * シークレットID。パスワード本体は data.json には書かれない
+	 */
+	passwordSecretId: string;
 	networkTimeoutMs: number;
 	defaultHashtags: string;
 	draftProperty: string;
@@ -846,9 +852,18 @@ interface BlueskyPluginSettings {
 	draftNoteFolder: string;
 }
 
+/** v0.5.1 以前は data.json にアプリパスワードを平文で持っていた。移行のためだけに読む */
+type StoredSettings = Partial<BlueskyPluginSettings> & { password?: string };
+
+/**
+ * キーチェーンに作るシークレットIDの既定値。
+ * IDは全プラグイン共有なので、他プラグインの同名シークレットは上書きしない
+ */
+const DEFAULT_SECRET_ID = 'bluesky-app-password';
+
 const DEFAULT_SETTINGS: BlueskyPluginSettings = {
 	handle: '',
-	password: '',
+	passwordSecretId: '',
 	networkTimeoutMs: 15000,
 	defaultHashtags: '',
 	draftProperty: 'type',
@@ -981,9 +996,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			handleLabel: 'ハンドル',
 			handleDesc: 'Bluesky のハンドル名を入力してください。',
 			handlePlaceholder: 'your-handle.bsky.social',
-			passwordLabel: 'パスワード',
-			passwordDesc: 'Bluesky のアプリパスワードを入力してください。',
-			passwordPlaceholder: 'アプリパスワード',
+			passwordLabel: 'アプリパスワード',
+			passwordDesc: 'Bluesky のアプリパスワードを Obsidian のキーチェーンに保存します。パスワード本体はプラグインの設定ファイルには保存されません。',
+			passwordMigrated: '保存されていたアプリパスワードを Obsidian のキーチェーンに移しました。',
+			passwordMigrationFailed: 'アプリパスワードをキーチェーンに移せませんでした。設定画面から入力し直してください。',
+			passwordSecretMissing: 'この端末のキーチェーンにアプリパスワードがありません。キーチェーンは端末間で同期されないため、設定画面で入力し直してください。',
 			timeoutLabel: 'タイムアウト',
 			timeoutDesc: 'ネットワークタイムアウト (ミリ秒)',
 			timeoutPlaceholder: '15000',
@@ -1090,9 +1107,11 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		handleLabel: 'Handle',
 		handleDesc: 'Enter your Bluesky handle.',
 		handlePlaceholder: 'your-handle.bsky.social',
-		passwordLabel: 'Password',
-		passwordDesc: 'Enter your Bluesky app password.',
-		passwordPlaceholder: 'App password',
+		passwordLabel: 'App password',
+		passwordDesc: 'Stores your Bluesky app password in the Obsidian keychain. The password itself is never written to the plugin settings file.',
+		passwordMigrated: 'Moved your saved app password into the Obsidian keychain.',
+		passwordMigrationFailed: 'Could not move the app password into the keychain. Please enter it again in settings.',
+		passwordSecretMissing: 'No app password in this device\'s keychain. The keychain does not sync between devices, so enter it again in settings.',
 		timeoutLabel: 'Timeout',
 		timeoutDesc: 'Network timeout (ms)',
 		timeoutPlaceholder: '15000',
@@ -1261,8 +1280,62 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 	onunload(): void {}
 
 	async loadSettings() {
-		const loaded = await this.loadData() as Partial<BlueskyPluginSettings> | null;
+		const loaded = await this.loadData() as StoredSettings | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+		await this.migrateLegacyPassword(loaded?.password);
+	}
+
+	/**
+	 * v0.5.1 以前の data.json に平文で残っているアプリパスワードをキーチェーンへ移す。
+	 * 移したあとは data.json から確実に消す（消さないと平文が残り続ける）。
+	 */
+	private async migrateLegacyPassword(legacyPassword: string | undefined): Promise<void> {
+		// Object.assign で settings 側にも旧キーが載っているので、まず落とす。
+		// 空文字だけが残っている場合もここで消える
+		delete (this.settings as StoredSettings).password;
+		if (!legacyPassword) {
+			// 空文字の旧キーが残っているだけなら、掃除した設定を書き戻して終わり
+			if (legacyPassword === '') await this.saveSettings();
+			return;
+		}
+		try {
+			const id = this.settings.passwordSecretId || this.findFreeSecretId(legacyPassword);
+			this.app.secretStorage.setSecret(id, legacyPassword);
+			this.settings.passwordSecretId = id;
+			await this.saveSettings();
+			new Notice(this.getLocale().passwordMigrated);
+		} catch (e) {
+			console.error('Failed to move the app password into secret storage:', e);
+			new Notice(this.getLocale().passwordMigrationFailed);
+		}
+	}
+
+	/**
+	 * まだ使われていないシークレットIDを選ぶ。
+	 * 同じIDが既にあり中身も同じなら、それは前回の移行結果なので再利用する。
+	 */
+	private findFreeSecretId(value: string): string {
+		const existing = new Set(this.app.secretStorage.listSecrets());
+		const isFree = (id: string) =>
+			!existing.has(id) || this.app.secretStorage.getSecret(id) === value;
+		if (isFree(DEFAULT_SECRET_ID)) return DEFAULT_SECRET_ID;
+		for (let i = 2; i <= 20; i++) {
+			const id = `${DEFAULT_SECRET_ID}-${i}`;
+			if (isFree(id)) return id;
+		}
+		return `${DEFAULT_SECRET_ID}-${Date.now()}`;
+	}
+
+	/** キーチェーンからアプリパスワードを取り出す。未設定・削除済みなら空文字 */
+	private getAppPassword(): string {
+		const id = this.settings.passwordSecretId?.trim();
+		if (!id) return '';
+		try {
+			return this.app.secretStorage.getSecret(id) ?? '';
+		} catch (e) {
+			console.error('Failed to read the app password from secret storage:', e);
+			return '';
+		}
 	}
 
 		async saveSettings() {
@@ -1358,8 +1431,12 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		}
 	
 		async login(): Promise<boolean> {
-			if (!this.settings.handle || !this.settings.password) {
-				new Notice(this.getLocale().loginRequired);
+			const password = this.getAppPassword();
+			if (!this.settings.handle || !password) {
+				// IDだけあって中身が無いのは、別の端末で設定した data.json が同期されてきた場合。
+				// キーチェーンは端末間で同期されないので、原因が分かる文言にする
+				const secretMissing = !password && !!this.settings.passwordSecretId?.trim();
+				new Notice(secretMissing ? this.getLocale().passwordSecretMissing : this.getLocale().loginRequired);
 				return false;
 			}
 			try {
@@ -1367,7 +1444,7 @@ function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 					url: 'https://bsky.social/xrpc/com.atproto.server.createSession',
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ identifier: this.settings.handle, password: this.settings.password })
+					body: JSON.stringify({ identifier: this.settings.handle, password })
 				});
 				if (!this.isSuccessStatus(response.status)) {
 					throw new Error(`${this.getLocale().loginFailed}: ${response.status}`);
@@ -2848,20 +2925,17 @@ class BlueskySettingTab extends PluginSettingTab {
 				control: { type: 'text', key: 'handle', placeholder: locale.handlePlaceholder }
 			},
 			{
-				// パスワードは入力マスクが必要なため render で描画（宣言的 text コントロールは type='password' 不可）
+				// パスワード本体はキーチェーンが預かる。設定に残るのはシークレットIDだけなので
+				// 宣言的コントロールではなく SecretComponent を render で差し込む
 				name: locale.passwordLabel,
 				desc: locale.passwordDesc,
 				render: (setting) => {
-					setting.addText(text => {
-						text.setPlaceholder(locale.passwordPlaceholder)
-							.setValue(this.plugin.settings.password);
-						text.inputEl.type = 'password';
-						text.inputEl.autocomplete = 'current-password';
-						text.onChange(async (value) => {
-							this.plugin.settings.password = value;
+					setting.addComponent((el) => new SecretComponent(this.app, el)
+						.setValue(this.plugin.settings.passwordSecretId)
+						.onChange(async (value) => {
+							this.plugin.settings.passwordSecretId = value;
 							await this.plugin.saveSettings();
-						});
-					});
+						}));
 				}
 			},
 			{
@@ -3006,17 +3080,12 @@ class BlueskySettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName(this.plugin.getLocale().passwordLabel)
 			.setDesc(this.plugin.getLocale().passwordDesc)
-			.addText(text => {
-				text.setPlaceholder(this.plugin.getLocale().passwordPlaceholder)
-					.setValue(this.plugin.settings.password);
-				// パスワードをマスク
-				text.inputEl.type = 'password';
-				text.inputEl.autocomplete = 'current-password';
-				text.onChange(async (value) => {
-					this.plugin.settings.password = value;
+			.addComponent((el) => new SecretComponent(this.app, el)
+				.setValue(this.plugin.settings.passwordSecretId)
+				.onChange(async (value) => {
+					this.plugin.settings.passwordSecretId = value;
 					await this.plugin.saveSettings();
-				});
-			});
+				}));
 
 		new Setting(containerEl)
 			.setName(this.plugin.getLocale().timeoutLabel)
