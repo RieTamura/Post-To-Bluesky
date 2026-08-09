@@ -126,6 +126,7 @@ npm run dev
 1. Open Obsidian Settings
 2. Go to the Post To Bluesky tab
 3. Enter your Bluesky handle and app password
+   - The app password goes into the Obsidian keychain, not into `data.json`
 4. (Optional) Set default hashtags
 
 ### 2. Creating a Post
@@ -355,7 +356,8 @@ You are not asked when:
 
 ### Environment
 
-- **Obsidian**: 1.8.7+
+- **Obsidian**: 1.11.5+ (since v0.6.0, required for keychain storage of the app password)
+  - v0.5.1 and earlier required 1.8.7+
 - **Platforms**: Desktop (Windows, macOS, Linux) and mobile (iOS, Android)
 - **Language**: TypeScript
 
@@ -377,7 +379,9 @@ You are not asked when:
 ### Basic
 
 - **Handle**: Your Bluesky handle (e.g. `@username.bsky.social`)
-- **App Password**: Bluesky app password (app-specific)
+- **App Password**: Bluesky app password, stored in the Obsidian keychain
+  - Create a new secret in the field, or pick one you already registered
+  - Stored values can be reviewed or deleted under **Settings → Keychain**
 - **Default Hashtags**: Automatically appended hashtags
   - Not inserted when composing from a draft note, to avoid eating into the 300-character limit
 - **Convert Markdown before posting**: Post `[display text](URL)` as a link and strip the markers of
@@ -439,15 +443,19 @@ Both targets are inputs with vault note suggestions, and accept date variables s
 
 ### Security & Privacy
 
-- Stored locally: handle, app password, default hashtags, network timeout (in plugin `data.json`).
-- App password is saved in plaintext inside your vault; protect vault access (no extra encryption).
+- **The app password is stored in the Obsidian keychain** (view or delete it under **Settings → Keychain**). It is never written to `data.json` inside your vault.
+- Since Obsidian 1.11.5 the keychain is encrypted at rest by your OS (Keychain on macOS, DPAPI on Windows). **On Linux this requires kwallet, kwallet5, kwallet6, or gnome-libsecret.**
+- If you upgrade from v0.5.1 or earlier, **your plaintext app password is moved into the keychain on first load and removed from `data.json`** (you get a notice when this happens). Backups or Git history created before the migration still contain the plaintext — delete them if that matters to you.
+- The keychain is **shared across all plugins**. Any other plugin can list secret IDs and read their values, so this protects against vault sync/sharing/disk leaks, not against a malicious plugin.
+- The keychain **does not sync between devices**. Set the app password separately on each device.
+- Stored locally in `data.json`: handle, secret ID, default hashtags, network timeout and other settings (at `.obsidian/plugins/post-to-bluesky/data.json`).
+- Use an [app password](https://bsky.app/settings/app-passwords), not your main Bluesky account password. App passwords can be revoked at any time in Bluesky settings.
+- Revoke the app password in Bluesky settings immediately if you suspect compromise.
 - Images are only read and uploaded at send time; not cached after posting.
 - Data sent only to Bluesky / AT Protocol endpoints (e.g. `bsky.social`) over HTTPS (TLS).
 - In transit: encrypted via HTTPS. At rest: relies on your OS / disk encryption only.
-- Credentials location: `.obsidian/plugins/Post-To-Bluesky/data.json`; deleting that file removes them.
 - Network timeout: default 15000 ms (configurable). No automatic retry on rate limit errors.
 - On rate limit or failure you get a notification; resend manually after waiting.
-- Revoke the app password in Bluesky settings immediately if you suspect compromise.
 
 ## Troubleshooting
 
@@ -532,6 +540,17 @@ Released under the 0BSD license.
   Markdown conversion is off (with it on, only the display name is kept)
 
 ## Changelog
+
+### v0.6.0
+
+- **The app password is now stored in the Obsidian keychain**, instead of in plaintext in the
+  plugin's `data.json`
+  - The keychain is encrypted at rest by your OS (Linux needs kwallet or gnome-libsecret)
+  - Upgrading from v0.5.1 or earlier migrates the password automatically on first load and removes
+    the plaintext from `data.json`
+  - The keychain is shared across plugins and does not sync between devices — see
+    [Security & Privacy](#security--privacy)
+- **Requires Obsidian 1.11.5 or later** (the version that introduced the keychain API)
 
 ### v0.5.1
 

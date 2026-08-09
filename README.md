@@ -6,7 +6,7 @@
 
 ---
 
-**Version / バージョン**: 0.5.1
+**Version / バージョン**: 0.6.0
 
 **Features (EN)**:
 
@@ -84,6 +84,14 @@ To post from a note, add `type: bluesky-draft` to its frontmatter and run **Post
 ノートから投稿する場合は、frontmatter に `type: bluesky-draft` を書いて **Post from draft notes** を実行します。
 
 詳細な設定項目は [日本語 README](./README_JA.md) / [English README](./README_EN.md) を参照してください。
+
+---
+
+## Security / セキュリティ
+
+**EN:** Since v0.6.0 the app password is kept in the **Obsidian keychain** (Settings → Keychain), encrypted at rest by your OS — not in the plugin's `data.json`. Upgrading from v0.5.1 or earlier moves it there automatically on first load. The keychain is shared with other plugins and does not sync between devices. Use an [app password](https://bsky.app/settings/app-passwords) — never your main account password — and revoke it in Bluesky settings if you suspect compromise. Details: [Security & Privacy](./README_EN.md#security--privacy).
+
+**JP:** v0.6.0以降、アプリパスワードは**Obsidianのキーチェーン**（設定 → キーチェーン）に保存され、OSの暗号化機構で保護されます。プラグインの `data.json` には書かれません。v0.5.1以前から更新した場合は初回起動時に自動で移行されます。キーチェーンは他のプラグインと共有で、デバイス間の同期はされません。通常のアカウントのパスワードではなく[アプリパスワード](https://bsky.app/settings/app-passwords)を使い、漏洩が疑われる場合はBluesky設定から失効させてください。詳細は[セキュリティとプライバシー](./README_JA.md#セキュリティとプライバシー)を参照してください。
 
 ---
 
