@@ -533,6 +533,15 @@ Released under the 0BSD license.
 
 ## Changelog
 
+### v0.5.1
+
+- **Fixed: images could not be attached on mobile once the composer had focus.** The software
+  keyboard covered the footer — the image button, the emoji button and the character counter —
+  and a textarea offers no way to dismiss it
+  - The composer no longer raises the keyboard when it opens; tap the text area to start typing
+  - A **dismiss keyboard button** now appears in the header while the text area has focus
+- Desktop behaviour is unchanged
+
 ### v0.5.0
 
 - **Added a setting to convert Markdown before posting** (default: off).
