@@ -47,6 +47,10 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 
 - Works in the Obsidian mobile app on iOS and Android
 - Every feature is available on mobile, image attachment included
+- The composer does not raise the keyboard when it opens (tap the text area to start
+  typing), so the image button and the character counter are visible right away
+- While typing, a **dismiss keyboard button** appears in the header. Pressing it brings
+  back the image button, the emoji button and the character counter hidden behind the keyboard
 
 ### 🖼️ Image Attachment
 
