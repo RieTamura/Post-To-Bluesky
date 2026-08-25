@@ -109,6 +109,7 @@ To post from a note, add `type: bluesky-draft` to its frontmatter and run **Post
 
 - ~~Mobile support / モバイル版対応~~ (v0.2.0)
 - ~~Obsidian Bases integration (save posts and hashtags) / Obsidian Bases対応（投稿文やハッシュタグを記録）~~ (v0.2.0)
+- Mention support (`@handle` as a link) / メンション対応（`@handle` をリンクとして投稿）
 - Base file generation for drafts and post history / 下書き・投稿履歴用のBaseファイル自動生成
 - Thread support / スレッド対応
 
