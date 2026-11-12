@@ -6,11 +6,12 @@
 
 ---
 
-**Version / バージョン**: 0.6.0
+**Version / バージョン**: 0.7.0
 
 **Features (EN)**:
 
 - Post to Bluesky from Obsidian
+- Mention people with `@handle` (custom-domain handles work too)
 - Write in Markdown — link syntax becomes a real link, other markers are stripped (off by default)
 - Post from draft notes in your vault
 - Keep unsent content as a draft note when you close the composer
@@ -25,6 +26,7 @@
 **機能概要 (JP)**:
 
 - ObsidianからBlueskyへ投稿
+- `@handle` でメンション（独自ドメインのハンドルにも対応）
 - Markdown記法で投稿文を書く（リンク記法は本物のリンクに、他の記号は除去。既定はオフ）
 - vault内の下書きノートから投稿
 - 投稿せずに閉じたとき、書きかけを下書きノートに残す
