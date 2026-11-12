@@ -1,6 +1,6 @@
 {
 	"name": "post-to-bluesky",
-	"version": "0.6.0",
+	"version": "0.7.0",
 	"description": "Post selected text or entire note to Bluesky.",
 	"main": "main.js",
 	"scripts": {
