@@ -9,6 +9,11 @@ const TIMEOUT_MESSAGE = 'Request timed out';
 const MAX_ATTEMPTS = 3;
 /** 再試行のたびに「この値 × 試行回数」だけ待つ */
 const RETRY_BASE_DELAY_MS = 600;
+/**
+ * ハンドル解決のタイムアウト。打ち間違い1件で投稿が設定値（既定15秒）まで
+ * 止まらないよう、短く固定する
+ */
+const RESOLVE_HANDLE_TIMEOUT_MS = 5000;
 
 /** requestWithTimeout が時間切れで投げたエラーかどうか */
 export function isTimeoutError(error: unknown): boolean {
@@ -45,6 +50,11 @@ export class BlueskyClient {
 	private did: string | undefined;
 	/** ログイン時に取得したアバター画像のURL。取れなければ空文字 */
 	avatar: string | undefined;
+	/**
+	 * ハンドル（小文字）→ DID。null は「存在しない」と確定したハンドル。
+	 * ハンドルは付け替えられることがあるので永続化せず、Obsidian の再起動で捨てる
+	 */
+	private readonly handleDidCache = new Map<string, string | null>();
 
 	constructor(private readonly host: BlueskyClientHost) {}
 
@@ -58,8 +68,8 @@ export class BlueskyClient {
 		this.did = undefined;
 	}
 
-	private async requestWithTimeout(params: RequestUrlParam): Promise<RequestUrlResponse> {
-		const duration = Math.max(1000, this.host.getTimeoutMs());
+	private async requestWithTimeout(params: RequestUrlParam, timeoutMs?: number): Promise<RequestUrlResponse> {
+		const duration = timeoutMs ?? Math.max(1000, this.host.getTimeoutMs());
 		let timer: number | null = null;
 		const timeoutPromise = new Promise<never>((_, reject) => {
 			timer = window.setTimeout(() => reject(new Error(TIMEOUT_MESSAGE)), duration);
@@ -171,6 +181,46 @@ export class BlueskyClient {
 			}
 			await sleep(RETRY_BASE_DELAY_MS * attempt);
 		}
+	}
+
+	/**
+	 * メンション用にハンドルを DID に解決し、解決できたものだけを表で返す。例外は投げない。
+	 *
+	 * resolveHandle は認証不要の公開エンドポイントなので authedRequest を通さない
+	 * （通すと未ログイン時のログインや 401 での再ログインが走る）。
+	 * 解決できなかったハンドルは平文のまま投稿されるだけなので、通知は出さない。
+	 * 「存在しない」（429 以外の 4xx）はキャッシュするが、通信の失敗（例外・タイムアウト・429・5xx）は
+	 * キャッシュしない。通信が戻った次の投稿で解決し直せるようにするため。
+	 */
+	async resolveHandles(handles: string[]): Promise<Map<string, string>> {
+		const unique = [...new Set(handles.map((h) => h.toLowerCase()))];
+		await Promise.all(unique.filter((h) => !this.handleDidCache.has(h)).map(async (handle) => {
+			try {
+				const response = await this.requestWithTimeout({
+					url: `${XRPC_BASE}/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(handle)}`
+				}, RESOLVE_HANDLE_TIMEOUT_MS);
+				if (response.status >= 200 && response.status < 300) {
+					const did = (response.json as { did?: unknown } | undefined)?.did;
+					if (typeof did === 'string' && did.startsWith('did:')) {
+						this.handleDidCache.set(handle, did);
+						return;
+					}
+				}
+				// 429（レート制限）は一時的なものなのでキャッシュしない
+				if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+					this.handleDidCache.set(handle, null);
+				}
+				console.warn(`Could not resolve @${handle} (HTTP ${response.status}); posting it as plain text`);
+			} catch (error) {
+				console.warn(`Could not resolve @${handle}; posting it as plain text:`, error);
+			}
+		}));
+		const resolved = new Map<string, string>();
+		for (const handle of unique) {
+			const did = this.handleDidCache.get(handle);
+			if (did) resolved.set(handle, did);
+		}
+		return resolved;
 	}
 
 	/**

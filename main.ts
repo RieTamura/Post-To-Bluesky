@@ -2,6 +2,7 @@ import { Notice, Plugin, getLanguage, normalizePath, TFile } from 'obsidian';
 import type { BlueskyPostRecord, Embed, PostResult } from './src/bluesky';
 import { BlueskyClient, LoginFailedError, isTimeoutError } from './src/bluesky-client';
 import { detectFacets } from './src/facets';
+import { findMentionCandidates, linkifyMentions } from './src/mentions';
 import { FRONTMATTER_BLOCK_REGEX, POSTED_CHECKBOX_PROPERTY, POSTED_FRONTMATTER_VALUE, addFrontmatterLink, buildFrontmatterWikiLink, expandDateTemplate, findNoteByPath, frontmatterMatchesValue, hasTemplatePlaceholder, stripMarkdownExtension, toYamlLink } from './src/frontmatter';
 import { LocaleStrings, getLocaleByObsidianLanguage } from './src/i18n';
 import { PendingDraft, SelectedImage, buildEmbedWikiLink, importImageToVault } from './src/images';
@@ -199,10 +200,13 @@ export default class BlueskyPlugin extends Plugin {
 			createdAt: new Date().toISOString(),
 			$type: 'app.bsky.feed.post'
 		};
-		const facets = detectFacets(text, markdownLinks);
-		if (facets) record.facets = facets;
 		if (embed) record.embed = embed;
 		try {
+			// メンションは投稿するテキスト（Markdown 変換後）から拾う。facet の位置はこのテキストが基準
+			const handles = findMentionCandidates(text).map((candidate) => candidate.handle);
+			const mentionDids = handles.length > 0 ? await this.client.resolveHandles(handles) : undefined;
+			const facets = detectFacets(text, markdownLinks, mentionDids);
+			if (facets) record.facets = facets;
 			const createdUri = await this.client.createPost(record);
 			new Notice(this.getLocale().postSuccess);
 			return { success: true, postUrl: this.buildPostUrl(createdUri) };
@@ -447,7 +451,10 @@ export default class BlueskyPlugin extends Plugin {
 
 		const tags = extractHashtags(text);
 		// タグは frontmatter の tags に持たせるので本文からは取り除く
-		const body = tags.length > 0 ? stripHashtags(text, tags) : text;
+		const withoutTags = tags.length > 0 ? stripHashtags(text, tags) : text;
+		// 履歴ノートはプラグインが作るノートなので、`@handle` をプロフィールリンクに整形してよい。
+		// 位置はタグを除いた後の本文で拾い直す（元の text の位置を使うとずれる）
+		const body = linkifyMentions(withoutTags);
 		const linkTarget = this.resolveLinkTargetPath(this.settings.historyLinkTarget, now);
 		const frontmatter = [
 			'---',

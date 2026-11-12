@@ -52,7 +52,11 @@ export interface LinkPreviewData {
 export type FacetByteRange = { byteStart: number; byteEnd: number };
 export type LinkFacetFeature = { $type: 'app.bsky.richtext.facet#link'; uri: string };
 export type TagFacetFeature = { $type: 'app.bsky.richtext.facet#tag'; tag: string };
-export type Facet = { index: FacetByteRange; features: (LinkFacetFeature | TagFacetFeature)[] };
+export type MentionFacetFeature = { $type: 'app.bsky.richtext.facet#mention'; did: string };
+export type Facet = {
+	index: FacetByteRange;
+	features: (LinkFacetFeature | TagFacetFeature | MentionFacetFeature)[];
+};
 
 export interface UploadBlobResponse {
 	blob: BlueskyBlobRef;
