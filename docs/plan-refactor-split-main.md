@@ -72,7 +72,7 @@ src/
 - 通信まわり（セッション保持・`login`・`fetchProfileAvatar`・`uploadBlob`・`createRecord`・`requestWithTimeout`・`retryWithBackoff`）を `BlueskyClient` クラスとして `src/bluesky-client.ts` に移す。プラグインは `plugin.client` として持つ
 - 401/429 の扱いは、`authedRequest(params, failureLabel)` という共通処理1本にまとめる。`uploadBlob` と `createRecord` はどちらもこれを通す
 - 投稿前の文字数・空チェックと `Notice` の表示は、今と同じ `postToBluesky` が受け持つ。呼び出し側（モーダル）の挙動は変えない
-- メンション対応で追加する `resolveHandle` も、この `authedRequest` に乗せる
+- メンション対応で追加する `resolveHandle` は認証不要の公開エンドポイントなので、`authedRequest` には乗せず `requestWithTimeout` を直接使う（2026-11-12 訂正。詳細は `docs/plan-mention-support.md`）
 
 統一で変わる細部（どれも許容範囲と判断）。node ハーネスで旧実装と突き合わせ、変わったのはこの4点だけと確認した:
 
