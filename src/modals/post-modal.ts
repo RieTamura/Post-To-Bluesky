@@ -139,8 +139,8 @@ export class PostModal extends Modal {
 			.onClick(() => this.handlePost());
 
 		const mainEl = contentEl.createDiv({ cls: 'bluesky-modal-main' });
-		if (this.plugin.userAvatar) {
-			mainEl.createEl('img', { cls: 'bluesky-avatar', attr: { src: this.plugin.userAvatar, alt: 'User avatar' } });
+		if (this.plugin.client.avatar) {
+			mainEl.createEl('img', { cls: 'bluesky-avatar', attr: { src: this.plugin.client.avatar, alt: 'User avatar' } });
 		}
 		this.textArea = mainEl.createEl('textarea', { cls: 'bluesky-textarea', attr: { placeholder: this.plugin.getLocale().placeholderText } });
 
@@ -553,7 +553,7 @@ export class PostModal extends Modal {
 				for (const image of this.selectedImages) {
 					const source = await this.readImageBlob(image);
 					const prepared = await prepareImageForUpload(source, 'image/jpeg');
-					const uploaded = await this.plugin.uploadBlob(prepared.buffer, prepared.mimeType);
+					const uploaded = await this.plugin.client.uploadBlob(prepared.buffer, prepared.mimeType);
 					uploadedImages.push({
 						image: uploaded.blob,
 						alt: '',
@@ -575,7 +575,7 @@ export class PostModal extends Modal {
 					const blob = imgResponse.arrayBuffer;
 					const ctEntry = Object.entries(imgResponse.headers).find(([k]) => k.toLowerCase() === 'content-type');
 					const mimeType = (ctEntry?.[1] as string) || 'image/jpeg';
-					const uploadedImage = await this.plugin.uploadBlob(blob, mimeType);
+					const uploadedImage = await this.plugin.client.uploadBlob(blob, mimeType);
 					// uploadBlob のレスポンスをそのまま使う（$type を落とすと createRecord が 400 になる）
 					thumb = uploadedImage.blob;
 				} catch (error) {

@@ -1,23 +1,29 @@
-import { Notice, requestUrl, Plugin, getLanguage, normalizePath, TFile } from 'obsidian';
-import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
-import { BlueskyPostRecord, CreateRecordResponse, CreateSessionResponse, Embed, ErrorResponse, Facet, FacetByteRange, HttpError, PostResult, UploadBlobResponse } from './src/bluesky';
+import { Notice, Plugin, getLanguage, normalizePath, TFile } from 'obsidian';
+import type { BlueskyPostRecord, Embed, PostResult } from './src/bluesky';
+import { BlueskyClient, LoginFailedError, isTimeoutError } from './src/bluesky-client';
+import { detectFacets } from './src/facets';
 import { FRONTMATTER_BLOCK_REGEX, POSTED_CHECKBOX_PROPERTY, POSTED_FRONTMATTER_VALUE, addFrontmatterLink, buildFrontmatterWikiLink, expandDateTemplate, findNoteByPath, frontmatterMatchesValue, hasTemplatePlaceholder, stripMarkdownExtension, toYamlLink } from './src/frontmatter';
 import { LocaleStrings, getLocaleByObsidianLanguage } from './src/i18n';
 import { PendingDraft, SelectedImage, buildEmbedWikiLink, importImageToVault } from './src/images';
-import { ConvertedMarkdown, MarkdownLink, convertMarkdownForPost } from './src/markdown';
+import type { ConvertedMarkdown, MarkdownLink } from './src/markdown';
+import { convertMarkdownForPost } from './src/markdown';
 import { DraftSaveConfirmModal } from './src/modals/draft-save-confirm-modal';
 import { DraftSelectModal } from './src/modals/draft-select-modal';
 import { PostModal } from './src/modals/post-modal';
 import { BlueskyPluginSettings, BlueskySettingTab, DEFAULT_SECRET_ID, DEFAULT_SETTINGS, StoredSettings } from './src/settings';
-import { MAX_POST_LENGTH, MAX_TAG_LENGTH, countGraphemes, createHashtagRegex, createUrlRegex, extractHashtags, stripHashtags, toYamlTag, trimTrailingPunctuation } from './src/text';
+import { MAX_POST_LENGTH, countGraphemes, extractHashtags, stripHashtags, toYamlTag } from './src/text';
 
 export default class BlueskyPlugin extends Plugin {
 	settings: BlueskyPluginSettings = DEFAULT_SETTINGS;
 	currentLocale: LocaleStrings = getLocaleByObsidianLanguage('en');
-	accessJwt: string | undefined;
-	refreshJwt: string | undefined;
-	did: string | undefined;
-	userAvatar: string | undefined;
+	readonly client = new BlueskyClient({
+		getHandle: () => this.settings.handle,
+		getAppPassword: () => this.getAppPassword(),
+		hasSecretId: () => !!this.settings.passwordSecretId?.trim(),
+		getTimeoutMs: () => this.settings.networkTimeoutMs ?? 15000,
+		getLocale: () => this.getLocale(),
+		notify: (message: string) => new Notice(message)
+	});
 	activeModal: PostModal | null = null;
 
 	async onload() {
@@ -168,162 +174,6 @@ export default class BlueskyPlugin extends Plugin {
 		return this.currentLocale || getLocaleByObsidianLanguage('en');
 	}
 
-	private get effectiveTimeout(): number {
-		return Math.max(1000, this.settings.networkTimeoutMs ?? 15000);
-	}
-
-	private isSuccessStatus(status: number): boolean {
-		return status >= 200 && status < 300;
-	}
-
-	private async requestWithTimeout(params: RequestUrlParam, timeoutOverride?: number): Promise<RequestUrlResponse> {
-		const duration = timeoutOverride ?? this.effectiveTimeout;
-		let timer: number | null = null;
-		const timeoutPromise = new Promise<never>((_, reject) => {
-			timer = window.setTimeout(() => reject(new Error('Request timed out')), duration);
-		});
-		try {
-			// throw: false にしないと 400+ で requestUrl が汎用エラーを投げてしまい、
-			// 呼び出し側のステータス判定（401 再ログイン・429 バックオフ）とAPIの
-			// エラーメッセージ抽出が働かなくなる
-			return await Promise.race([requestUrl({ ...params, throw: false }), timeoutPromise]);
-		} finally {
-			if (timer !== null) {
-				window.clearTimeout(timer);
-			}
-		}
-	}
-
-	private async retryWithBackoff<T>(operation: () => Promise<T>, options?: {
-		maxRetries?: number;
-		baseDelayMs?: number;
-		shouldRetry?: (error: unknown, attempt: number) => Promise<boolean> | boolean;
-	}): Promise<T> {
-		const maxAttempts = Math.max(1, options?.maxRetries ?? 3);
-		const baseDelay = Math.max(100, options?.baseDelayMs ?? 500);
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			try {
-				return await operation();
-			} catch (error) {
-				const hasAttemptsLeft = attempt < maxAttempts;
-				const allowRetry = hasAttemptsLeft && (options?.shouldRetry ? await options.shouldRetry(error, attempt) : false);
-				if (!allowRetry) throw error;
-				const delay = baseDelay * attempt;
-				await new Promise((resolve) => window.setTimeout(resolve, delay));
-			}
-		}
-		throw new Error('Operation failed after retries');
-	}
-
-	private createHttpError(response: RequestUrlResponse, fallbackMessage: string): HttpError {
-		const errorBody = (response.json as ErrorResponse) ?? {};
-		const message = errorBody.message || errorBody.error || fallbackMessage;
-		const err = new Error(message) as HttpError;
-		err.status = response.status;
-		err.response = response;
-		return err;
-	}
-
-	private async fetchProfileAvatar(actorDid: string): Promise<void> {
-		if (!this.accessJwt) return;
-		try {
-			const response = await this.requestWithTimeout({
-				url: `https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${actorDid}`,
-				headers: { Authorization: `Bearer ${this.accessJwt}` }
-			});
-			if (!this.isSuccessStatus(response.status)) return;
-			const profileData = response.json as { avatar?: string };
-			this.userAvatar = profileData.avatar || '';
-		} catch (error) {
-			console.error(this.getLocale().avatarFetchFailed + ':', error);
-		}
-	}
-
-	async login(): Promise<boolean> {
-		const password = this.getAppPassword();
-		if (!this.settings.handle || !password) {
-			// IDだけあって中身が無いのは、別の端末で設定した data.json が同期されてきた場合。
-			// キーチェーンは端末間で同期されないので、原因が分かる文言にする
-			const secretMissing = !password && !!this.settings.passwordSecretId?.trim();
-			new Notice(secretMissing ? this.getLocale().passwordSecretMissing : this.getLocale().loginRequired);
-			return false;
-		}
-		try {
-			const response = await this.requestWithTimeout({
-				url: 'https://bsky.social/xrpc/com.atproto.server.createSession',
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ identifier: this.settings.handle, password })
-			});
-			if (!this.isSuccessStatus(response.status)) {
-				throw new Error(`${this.getLocale().loginFailed}: ${response.status}`);
-			}
-			const data = response.json as CreateSessionResponse;
-			this.accessJwt = data.accessJwt;
-			this.refreshJwt = data.refreshJwt;
-			this.did = data.did;
-			await this.fetchProfileAvatar(data.did);
-			return true;
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			new Notice(`${this.getLocale().loginFailed}: ${message}`);
-			return false;
-		}
-	}
-
-	/**
-	 * 本文から facet を組み立てる。
-	 *
-	 * @param markdownLinks Markdown のリンク記法から得た範囲（文字単位）。
-	 *   表示テキストにURLやハッシュタグらしき文字列が含まれることがあるが、
-	 *   範囲の重なった facet を送ると Bluesky 側でリンクが壊れるため、
-	 *   ここで作った範囲と重なる URL・タグは facet にしない。
-	 */
-	detectFacets(text: string, markdownLinks: MarkdownLink[] = []): Facet[] | undefined {
-		const facets: Facet[] = [];
-		const encoder = new TextEncoder();
-		const byteOffsetOf = (charIndex: number) => encoder.encode(text.slice(0, charIndex)).length;
-		const reserved: FacetByteRange[] = [];
-		for (const link of markdownLinks) {
-			const index = { byteStart: byteOffsetOf(link.start), byteEnd: byteOffsetOf(link.end) };
-			if (index.byteEnd <= index.byteStart) continue;
-			reserved.push(index);
-			facets.push({ index, features: [{ $type: 'app.bsky.richtext.facet#link', uri: link.uri }] });
-		}
-		const overlapsReserved = (range: FacetByteRange) =>
-			reserved.some((taken) => range.byteStart < taken.byteEnd && taken.byteStart < range.byteEnd);
-		const linkRegex = createUrlRegex();
-		let match: RegExpExecArray | null;
-		while ((match = linkRegex.exec(text)) !== null) {
-			const rawUri = match[0];
-			const uri = trimTrailingPunctuation(rawUri);
-			const byteStart = byteOffsetOf(match.index);
-			const byteEnd = byteStart + encoder.encode(uri).length;
-			if (overlapsReserved({ byteStart, byteEnd })) continue;
-			const linkFacet: Facet = {
-				index: { byteStart, byteEnd },
-				features: [{ $type: 'app.bsky.richtext.facet#link', uri }]
-			};
-			facets.push(linkFacet);
-		}
-		const hashtagRegex = createHashtagRegex();
-		while ((match = hashtagRegex.exec(text)) !== null) {
-			const tag = match[0];
-			const tagWithoutHash = tag.slice(1);
-			if (countGraphemes(tagWithoutHash) > MAX_TAG_LENGTH) continue;
-			const byteStart = byteOffsetOf(match.index);
-			const byteEnd = byteStart + encoder.encode(tag).length;
-			if (overlapsReserved({ byteStart, byteEnd })) continue;
-			const tagFacet: Facet = {
-				index: { byteStart, byteEnd },
-				features: [{ $type: 'app.bsky.richtext.facet#tag', tag: tagWithoutHash }]
-			};
-			facets.push(tagFacet);
-		}
-		facets.sort((a, b) => a.index.byteStart - b.index.byteStart);
-		return facets.length > 0 ? facets : undefined;
-	}
-
 	/**
 	 * 入力された本文を、実際に投稿するテキストと Markdown 由来のリンク範囲に分ける。
 	 * 変換が無効なら入力をそのまま返すので、呼び出し側は設定を見ずに済む。
@@ -335,62 +185,6 @@ export default class BlueskyPlugin extends Plugin {
 		return convertMarkdownForPost(raw);
 	}
 
-	async uploadBlob(blob: ArrayBuffer, mimeType: string): Promise<UploadBlobResponse> {
-		const maxAttempts = 3; // Guard against infinite recursion and allow limited retries
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			if (!this.accessJwt) {
-				if (!(await this.login())) throw new Error('ログインに失敗しました');
-			}
-			try {
-				const response = await this.requestWithTimeout({
-					url: 'https://bsky.social/xrpc/com.atproto.repo.uploadBlob',
-					method: 'POST',
-					headers: {
-						'Content-Type': mimeType,
-						Accept: 'application/json',
-						Authorization: `Bearer ${this.accessJwt}`
-					},
-					body: blob
-				});
-				if (this.isSuccessStatus(response.status)) {
-					return response.json as UploadBlobResponse;
-				}
-
-				if (response.status === 401) {
-					this.accessJwt = undefined;
-					this.refreshJwt = undefined;
-					this.did = undefined;
-					if (attempt === maxAttempts) {
-						throw new Error('画像アップロードに失敗しました: 認証エラー');
-					}
-					continue;
-				}
-
-				if (response.status === 429) {
-					if (attempt === maxAttempts) {
-						throw new Error('画像アップロードに失敗しました: レート制限');
-					}
-					const retryAfter = Number(response.headers['retry-after']);
-					const baseBackoffMs = Number.isFinite(retryAfter) ? Math.max(500, retryAfter * 1000) : 1500;
-					const backoffMs = baseBackoffMs * attempt;
-					await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
-					continue;
-				}
-
-				const errorBody = (response.json as { message?: string; error?: string }) ?? {};
-				const message = errorBody.message || errorBody.error || `画像アップロードに失敗しました: ${response.status}`;
-				throw new Error(message);
-			} catch (error) {
-				if (error instanceof Error && error.message === 'Request timed out') {
-					throw new Error('画像アップロードがタイムアウトしました', { cause: error });
-				}
-				throw error;
-			}
-		}
-
-		throw new Error('画像アップロードに失敗しました');
-	}
-
 	async postToBluesky(text: string, embed?: Embed, markdownLinks: MarkdownLink[] = []): Promise<PostResult> {
 		if (!text.trim() && (!embed || embed.$type !== 'app.bsky.embed.images')) {
 			new Notice(this.getLocale().postContentEmpty);
@@ -400,69 +194,22 @@ export default class BlueskyPlugin extends Plugin {
 			new Notice(this.getLocale().postTooLong);
 			return { success: false };
 		}
-		if (!this.accessJwt || !this.did) {
-			if (!(await this.login())) return { success: false };
-		}
 		const record: BlueskyPostRecord = {
 			text,
 			createdAt: new Date().toISOString(),
 			$type: 'app.bsky.feed.post'
 		};
-		const facets = this.detectFacets(text, markdownLinks);
+		const facets = detectFacets(text, markdownLinks);
 		if (facets) record.facets = facets;
 		if (embed) record.embed = embed;
 		try {
-			let refreshedAuth = false;
-			const createdUri = await this.retryWithBackoff(
-				async () => {
-					const response = await this.requestWithTimeout({
-						url: 'https://bsky.social/xrpc/com.atproto.repo.createRecord',
-						method: 'POST',
-						headers: {
-							'Content-Type': 'application/json',
-							Authorization: `Bearer ${this.accessJwt}`
-						},
-						body: JSON.stringify({
-							repo: this.did,
-							collection: 'app.bsky.feed.post',
-							record
-						})
-					});
-					if (!this.isSuccessStatus(response.status)) {
-						throw this.createHttpError(response, `${this.getLocale().postFailed}: ${response.status}`);
-					}
-					return (response.json as CreateRecordResponse | undefined)?.uri;
-				},
-				{
-					maxRetries: 3,
-					baseDelayMs: 600,
-					shouldRetry: async (error) => {
-						const status = typeof (error as HttpError)?.status === 'number' ? (error as HttpError).status : undefined;
-						if (status === 401 && !refreshedAuth) {
-							refreshedAuth = true;
-							this.accessJwt = undefined;
-							this.refreshJwt = undefined;
-							this.did = undefined;
-							return this.login();
-						}
-						if (status === 429) {
-							const response = (error as HttpError).response;
-							const retryAfter = Number(response?.headers['retry-after']);
-							const delay = Number.isFinite(retryAfter) ? Math.max(500, retryAfter * 1000) : 0;
-							if (delay > 0) {
-								await new Promise((resolve) => window.setTimeout(resolve, delay));
-							}
-							return true;
-						}
-						return false;
-					}
-				}
-			);
+			const createdUri = await this.client.createPost(record);
 			new Notice(this.getLocale().postSuccess);
 			return { success: true, postUrl: this.buildPostUrl(createdUri) };
 		} catch (error) {
-			const isTimeout = error instanceof Error && error.message === 'Request timed out';
-			if (isTimeout) {
+			// ログインできなかった理由はログイン処理が通知済み
+			if (error instanceof LoginFailedError) return { success: false };
+			if (isTimeoutError(error)) {
 				new Notice(this.getLocale().postTimeout);
 			} else {
 				const message = error instanceof Error ? error.message : String(error);
@@ -490,8 +237,8 @@ export default class BlueskyPlugin extends Plugin {
 	openPostModal(initialText = '', sourceFile: TFile | null = null, initialImages: TFile[] = [], resumeImages?: SelectedImage[]) {
 		if (this.activeModal) return;
 		// 予備ログイン（失敗しても無視）
-		if (!this.accessJwt) {
-			void this.login().catch(() => { });
+		if (!this.client.isLoggedIn) {
+			void this.client.login().catch(() => { });
 		}
 		const modal = new PostModal(this.app, this, initialText, sourceFile, initialImages, resumeImages);
 		this.activeModal = modal;
@@ -586,8 +333,8 @@ export default class BlueskyPlugin extends Plugin {
 	 */
 	openDraftSelectModal() {
 		if (this.activeModal) return;
-		if (!this.accessJwt) {
-			void this.login().catch(() => { });
+		if (!this.client.isLoggedIn) {
+			void this.client.login().catch(() => { });
 		}
 		new DraftSelectModal(this.app, this).open();
 	}

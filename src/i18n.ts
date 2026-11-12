@@ -13,6 +13,7 @@ export type LocaleStrings = {
 	postTimeout: string;
 	postSuccess: string;
 	imageUploadError: string;
+	imageUploadTimeout: string;
 	maxImagesReached: string;
 	addImage: string;
 	imageLimitHint: string;
@@ -118,6 +119,7 @@ export function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 			postTimeout: '投稿がタイムアウトしました',
 			postSuccess: '投稿が完了しました',
 			imageUploadError: '画像アップロードエラー',
+			imageUploadTimeout: '画像アップロードがタイムアウトしました',
 			maxImagesReached: `画像は最大${MAX_IMAGES}枚までです。`,
 			addImage: '画像追加',
 			imageLimitHint: `最大${MAX_IMAGES}枚`,
@@ -228,6 +230,7 @@ export function getLocaleByObsidianLanguage(lang: string): LocaleStrings {
 		postTimeout: 'Post timed out',
 		postSuccess: 'Post successful',
 		imageUploadError: 'Image upload error',
+		imageUploadTimeout: 'Image upload timed out',
 		maxImagesReached: `Maximum ${MAX_IMAGES} images allowed.`,
 		addImage: 'Add image',
 		imageLimitHint: `up to ${MAX_IMAGES}`,

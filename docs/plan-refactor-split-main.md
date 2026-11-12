@@ -2,7 +2,7 @@
 
 作成日: 2026-11-12
 対象バージョン: v0.6.0（リリースは v0.7.0 に同梱。単独リリースはしない）
-実装状況: 着手
+実装状況: フェーズ1・2とも実装済み（ブランチ `refactor/split-main`）。node ハーネスで確認済みで、**デスクトップ実機での確認は未実施**
 
 ---
 
@@ -46,7 +46,9 @@ src/
   markdown.ts               Markdown → 投稿テキスト変換
   i18n.ts                   LocaleStrings と日英の文字列
   settings.ts               設定の型・既定値・設定タブ・フォルダ/ファイルのサジェスト
-  bluesky.ts                Bluesky API の型と通信クライアント（2-2）
+  bluesky.ts                Bluesky API の型
+  bluesky-client.ts         通信クライアント BlueskyClient（2-2）
+  facets.ts                 detectFacets（プラグインのメソッドだったが this を使っていなかったので関数にした）
   modals/
     post-modal.ts
     draft-save-confirm-modal.ts
@@ -67,19 +69,21 @@ src/
 
 方針:
 
-- 通信まわり（セッション保持・`login`・`fetchProfileAvatar`・`uploadBlob`・`createRecord`・`requestWithTimeout`・`retryWithBackoff`）を `BlueskyClient` クラスとして `src/bluesky.ts` に移す
+- 通信まわり（セッション保持・`login`・`fetchProfileAvatar`・`uploadBlob`・`createRecord`・`requestWithTimeout`・`retryWithBackoff`）を `BlueskyClient` クラスとして `src/bluesky-client.ts` に移す。プラグインは `plugin.client` として持つ
 - 401/429 の扱いは、`authedRequest(params, failureLabel)` という共通処理1本にまとめる。`uploadBlob` と `createRecord` はどちらもこれを通す
 - 投稿前の文字数・空チェックと `Notice` の表示は、今と同じ `postToBluesky` が受け持つ。呼び出し側（モーダル）の挙動は変えない
 - メンション対応で追加する `resolveHandle` も、この `authedRequest` に乗せる
 
-統一で変わる細部（どちらも許容範囲と判断）:
+統一で変わる細部（どれも許容範囲と判断）。node ハーネスで旧実装と突き合わせ、変わったのはこの4点だけと確認した:
 
-- 画像アップロードの 429 は、待ち時間が「`retry-after`（なければ 1.5 秒）× 試行回数」から投稿と同じ計算に揃う
+- 画像アップロードの 429 で待つ時間が変わる。旧は「`retry-after`（なければ 1.5 秒）× 試行回数」。新は投稿と同じく「`retry-after` の秒数 ＋ 0.6 秒 × 試行回数」
 - 画像アップロードの 401 で再ログインする回数が、最大2回から投稿と同じ1回になる
+- ログイン失敗の通知は、前置きが「ログインに失敗しました: ログインに失敗しました: 401」と二重になっていた。サーバーが返す理由（例: Invalid identifier or password）を出すように直した
+- APIがエラー文言を返さなかったときの文言を、「投稿に失敗しました: 500」から `HTTP 500` にした。通知側が「投稿に失敗しました: 」を付けるので、二重にならないようにするため
 
 ### 2-3 翻訳漏れの修正
 
-`uploadBlob` の例外メッセージ5件が日本語で固定されており、英語環境でも日本語で表示される。これを `LocaleStrings` に移す。追加するキーは `imageUploadFailed`・`imageUploadTimeout`・`authError`・`rateLimited` の程度に留める。
+`uploadBlob` の例外メッセージ5件が日本語で固定されており、英語環境でも日本語で表示される。2-2 の統一で、「認証エラー」「レート制限」「失敗しました: 500」の3種は、APIが返す文言（無ければ `HTTP 401` など）に置き換わった。残るタイムアウトとログイン失敗は `LocaleStrings` を使う。**追加したキーは `imageUploadTimeout` の1件だけ**。
 
 ---
 
