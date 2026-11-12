@@ -9,6 +9,7 @@ This plugin lets you post from Obsidian to Bluesky. Open the post modal to compo
 ### 📝 Posting
 
 - **Create Post**: Open the post modal to compose freely and send to Bluesky
+- **Mentions**: `@handle` in the text is posted as a link to that profile (custom-domain handles work too)
 
 ### ✍️ Write in Markdown (off by default)
 
@@ -214,6 +215,8 @@ The posted text is kept here.
 - The file name is generated from the timestamp (e.g. `2026-07-26 1730.md`)
 - Hashtags are moved to `tags` and stripped from the body, so the note body is not a
   byte-for-byte copy of what was posted. Follow `url` for the original
+- `@handle` in the body becomes a `[@handle](https://bsky.app/profile/handle)` link, so you can open
+  the profile from the note (an `@` inside code, links or URLs is left alone)
 - The destination folder is created automatically if it does not exist
 - If saving the history fails, the post is still treated as successful and only a
   notice is shown
@@ -340,6 +343,26 @@ You are not asked when:
 - nothing changed since the composer was opened (for example opening a draft note and closing it)
 - "Ask to save a draft when closing" is off
 
+### 2-6. Mentioning Someone
+
+Write `@handle` in the text and it becomes a link to that profile on Bluesky, and the person is
+notified. There is nothing to set up, and it works whether Markdown conversion is on or off.
+
+```text
+@alice.bsky.social good morning
+(together with @example.com)
+```
+
+- **Custom-domain handles work too** (such as `@example.com`)
+- The posted text is unchanged and the character count stays the same
+- The `@` must come at the **start of a line, after a space, or after `(`**. An `@` right after
+  another character, and the full-width `＠`, are not mentions (the same as in the official Bluesky
+  app). Email addresses (`foo@example.com`) are not mentions either
+- **A handle that cannot be found is posted as plain text.** A typo never blocks the post and no
+  notice is shown. If the handle is not a blue link on Bluesky afterwards, check the spelling
+- Posting from a draft note does not rewrite the draft. In post history notes, `@handle` becomes a
+  link to the profile (see 2-2)
+
 ### 3. Editing a Post
 
 - Edit text freely
@@ -454,8 +477,11 @@ Both targets are inputs with vault note suggestions, and accept date variables s
 - Images are only read and uploaded at send time; not cached after posting.
 - Data sent only to Bluesky / AT Protocol endpoints (e.g. `bsky.social`) over HTTPS (TLS).
 - In transit: encrypted via HTTPS. At rest: relies on your OS / disk encryption only.
-- Network timeout: default 15000 ms (configurable). No automatic retry on rate limit errors.
-- On rate limit or failure you get a notification; resend manually after waiting.
+- Network timeout: default 15000 ms (configurable). Checking a mentioned handle gives up after 5 seconds.
+- On a rate limit (429) the request is retried automatically up to twice, waiting as long as Bluesky
+  asks. If it still fails you get a notification; resend after waiting.
+- For posts with mentions, each handle name is sent to the public `bsky.social` API
+  (`com.atproto.identity.resolveHandle`) to look it up.
 
 ## Troubleshooting
 
@@ -497,10 +523,22 @@ Both targets are inputs with vault note suggestions, and accept date variables s
 
 ```text
 Post-To-Bluesky/
-├── main.ts           # Main plugin class
-├── styles.css        # Styles
-├── manifest.json     # Plugin manifest
-└── package.json      # Dependencies
+├── main.ts                 # Plugin class (commands, settings, draft and history notes)
+├── src/
+│   ├── bluesky.ts          # Bluesky API types
+│   ├── bluesky-client.ts   # Talking to Bluesky (login, posts, images, handle lookup)
+│   ├── facets.ts           # Link, tag and mention facets
+│   ├── mentions.ts         # Finding @handle and linking it in history notes
+│   ├── markdown.ts         # Markdown to post text
+│   ├── text.ts             # URL and hashtag detection, character count
+│   ├── frontmatter.ts      # Frontmatter, date variables, wikilinks
+│   ├── images.ts           # Image checks, import and resizing
+│   ├── i18n.ts             # Japanese and English strings
+│   ├── settings.ts         # Settings type, defaults and settings tab
+│   └── modals/             # Composer, draft list and other modals
+├── styles.css              # Styles
+├── manifest.json           # Plugin manifest
+└── package.json            # Dependencies
 ```
 
 ### Build & Test
@@ -532,7 +570,10 @@ Released under the 0BSD license.
 - SVG cannot be attached — it is not decodable as an image, so it never appears in the picker
 - Images cannot be added by drag & drop or paste; use the button or the command
 - 300 characters per post (an error is shown before sending if exceeded)
-- No automatic retry on rate limit errors — you get a notice and resend after waiting
+- Rate limit errors are retried automatically up to twice; after that you get a notice and can resend after waiting
+- Only an `@handle` at the start of a line, after a space or after `(` becomes a mention. The
+  full-width `＠` is not supported, and neither are internationalized domains written in non-ASCII
+  characters (`@日本語.jp`); write such a domain in its punycode form (`@xn--...`) instead
 - **Bluesky posts have no bold, italic or headings.** A post record can only carry plain text plus
   facets (link, mention, tag) — the format simply has no facet for decoration. Markdown conversion
   can therefore only turn link syntax into links and strip what cannot be represented
@@ -540,6 +581,19 @@ Released under the 0BSD license.
   Markdown conversion is off (with it on, only the display name is kept)
 
 ## Changelog
+
+### v0.7.0
+
+- **Mentions.** `@handle` in the text becomes a link to that profile on Bluesky
+  - Custom-domain handles work too
+  - A handle that cannot be found is posted as plain text and never blocks the post
+  - Post history notes keep `@handle` as a link to the profile
+- Fixed: image upload errors were shown in Japanese even with the English UI
+- Fixed: a failed login read "Login failed: Login failed: 401" without the reason. The reason
+  Bluesky gives (such as a wrong password) is now shown
+- Fixed: a `#` inside a URL, as in `https://example.com/page#section`, was also treated as a hashtag
+  that overlapped the link
+- Image uploads now retry after an expired sign-in or a rate limit the same way posts do
 
 ### v0.6.0
 
